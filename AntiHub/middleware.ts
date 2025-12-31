@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8008';
+import { getInternalApiBaseUrl } from './lib/apiBase';
+
+const API_BASE_URL = getInternalApiBaseUrl();
 
 /**
  * 尝试刷新 token

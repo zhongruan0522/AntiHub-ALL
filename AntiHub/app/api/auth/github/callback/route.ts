@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8008';
-const FRONTEND_URL = process.env.NEXT_PUBLIC_FRONTEND_URL || 'http://localhost:3000';
+import { getInternalApiBaseUrl } from '@/lib/apiBase';
 
 /**
  * GitHub OAuth 回调处理
@@ -9,6 +8,9 @@ const FRONTEND_URL = process.env.NEXT_PUBLIC_FRONTEND_URL || 'http://localhost:3
  * 转发给后端 API 完成认证,然后重定向到前端
  */
 export async function GET(request: NextRequest) {
+  const API_BASE_URL = getInternalApiBaseUrl();
+  const FRONTEND_URL = request.nextUrl.origin;
+
   const searchParams = request.nextUrl.searchParams;
   const code = searchParams.get('code');
   const state = searchParams.get('state');

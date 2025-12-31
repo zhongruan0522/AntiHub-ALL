@@ -13,10 +13,10 @@ RUN pip install uv --no-cache
 # 复制依赖文件
 COPY pyproject.toml uv.lock* ./
 
-# 安装依赖到虚拟环境
+# 安装依赖到虚拟环境（使用 lock，且不尝试安装本项目本身）
 RUN uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
-    uv pip install --no-cache
+    uv sync --frozen --no-dev --active --no-install-project
 
 # ============ 运行阶段 ============
 FROM python:3.10-slim-bookworm AS runner
@@ -48,7 +48,7 @@ EXPOSE 8000
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=5)" || exit 1
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/api/health', timeout=5)" || exit 1
 
 # 启动命令
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]

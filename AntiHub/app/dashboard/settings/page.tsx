@@ -20,6 +20,7 @@ import { MorphingSquare } from '@/components/ui/morphing-square';
 import { cn } from '@/lib/utils';
 import Toaster, { ToasterRef } from '@/components/ui/toast';
 import { Badge as Badge1 } from '@/components/ui/badge-1';
+import { getPublicApiBaseUrl } from '@/lib/apiBase';
 
 export default function SettingsPage() {
   const toasterRef = useRef<ToasterRef>(null);
@@ -37,7 +38,13 @@ export default function SettingsPage() {
   const [selectedConfigType, setSelectedConfigType] = useState<'antigravity' | 'kiro'>('antigravity');
   const [keyName, setKeyName] = useState('');
 
-  const apiEndpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8008';
+  const [apiEndpoint, setApiEndpoint] = useState(() => getPublicApiBaseUrl());
+
+  useEffect(() => {
+    const base = getPublicApiBaseUrl();
+    if (/^https?:\/\//i.test(base)) return;
+    setApiEndpoint(`${window.location.origin}${base}`);
+  }, []);
 
   const loadAPIKeys = async () => {
     try {

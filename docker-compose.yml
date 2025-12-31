@@ -1,0 +1,100 @@
+services:
+  web:
+    image: ghcr.io/${IMAGE_OWNER:-zhongruan0522}/antihub-web:${IMAGE_TAG:-latest}
+    container_name: antihub-web
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/${IMAGE_OWNER:-zhongruan0522}/antihub-backend:${IMAGE_TAG:-latest}
+    container_name: antihub-backend
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # 外部依赖（由你自己提供/维护）
+      DATABASE_URL: ${DATABASE_URL}
+
+      # Redis：默认使用 compose 自带 redis；如你有现成的 Redis，可在 .env 里覆盖
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+      # 内部互联（已预置，不需要你再配“互相链接”的环境变量）
+      PLUGIN_API_BASE_URL: http://plugin:8045
+      PLUGIN_API_ADMIN_KEY: ${PLUGIN_ADMIN_API_KEY}
+      PLUGIN_API_ENCRYPTION_KEY: ${PLUGIN_API_ENCRYPTION_KEY}
+
+      # 需要你自己配置的密钥/回调（外部可见）
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+
+      # Linux.do OAuth（如不使用也需要给占位值，否则后端配置校验会失败）
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-changeme}
+      OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:-changeme}
+      OAUTH_REDIRECT_URI: ${PUBLIC_URL:-http://localhost:3000}/api/auth/callback
+      OAUTH_AUTHORIZATION_ENDPOINT: ${OAUTH_AUTHORIZATION_ENDPOINT:-https://connect.linux.do/oauth2/authorize}
+      OAUTH_TOKEN_ENDPOINT: ${OAUTH_TOKEN_ENDPOINT:-https://connect.linux.do/oauth2/token}
+      OAUTH_USER_INFO_ENDPOINT: ${OAUTH_USER_INFO_ENDPOINT:-https://connect.linux.do/api/user}
+
+      # GitHub OAuth（可选）
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_REDIRECT_URI: ${PUBLIC_URL:-http://localhost:3000}/api/auth/github/callback
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_started
+      plugin:
+        condition: service_started
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  plugin:
+    image: ghcr.io/${IMAGE_OWNER:-zhongruan0522}/antihub-plugin:${IMAGE_TAG:-latest}
+    container_name: antihub-plugin
+    environment:
+      NODE_ENV: production
+      PORT: 8045
+
+      # 外部依赖（由你自己提供/维护）
+      DB_HOST: ${PLUGIN_DB_HOST}
+      DB_PORT: ${PLUGIN_DB_PORT:-5432}
+      DB_NAME: ${PLUGIN_DB_NAME:-antigravity}
+      DB_USER: ${PLUGIN_DB_USER}
+      DB_PASSWORD: ${PLUGIN_DB_PASSWORD}
+
+      # Redis：默认使用 compose 自带 redis；如你有现成的 Redis，可在 .env 里覆盖
+      REDIS_HOST: ${PLUGIN_REDIS_HOST:-redis}
+      REDIS_PORT: ${PLUGIN_REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${PLUGIN_REDIS_PASSWORD:-}
+
+      # 需要你自己配置的密钥/回调（外部可见）
+      ADMIN_API_KEY: ${PLUGIN_ADMIN_API_KEY}
+      OAUTH_CALLBACK_URL: ${PLUGIN_OAUTH_CALLBACK_URL:-}
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: antihub-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - antihub_redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  antihub_redis_data:

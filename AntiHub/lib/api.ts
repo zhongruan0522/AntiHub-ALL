@@ -4,7 +4,9 @@
  * 支持无感刷新 Token
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8008';
+import { getApiBaseUrlForRuntime } from './apiBase';
+
+const API_BASE_URL = getApiBaseUrlForRuntime();
 
 // ==================== 类型定义 ====================
 
