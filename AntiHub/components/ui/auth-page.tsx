@@ -10,7 +10,7 @@ import {
 	ChevronLeftIcon,
 } from 'lucide-react';
 import { Input } from './input';
-import { initiateSSOLogin, initiateGitHubLogin, checkEmailExists, sendEmailLogin, isAuthenticated } from '@/lib/api';
+import { initiateSSOLogin, initiateGitHubLogin, login, isAuthenticated } from '@/lib/api';
 import { MorphingSquare } from './morphing-square';
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -22,7 +22,8 @@ const ERROR_MESSAGES: Record<string, string> = {
 export function AuthPage() {
 	const router = useRouter();
 	const searchParams = useSearchParams();
-	const [email, setEmail] = useState('');
+	const [username, setUsername] = useState('');
+	const [password, setPassword] = useState('');
 	const [isLoading, setIsLoading] = useState(false);
 	const [isSSOLoading, setIsSSOLoading] = useState(false);
 	const [isGitHubLoading, setIsGitHubLoading] = useState(false);
@@ -43,29 +44,15 @@ export function AuthPage() {
 		}
 	}, [searchParams]);
 
-	// 处理邮箱登录
-	const handleEmailLogin = async (e: React.FormEvent) => {
+	// 处理账号密码登录
+	const handlePasswordLogin = async (e: React.FormEvent) => {
 		e.preventDefault();
 		setError('');
 		setIsLoading(true);
 
 		try {
-			// 检查邮箱是否存在
-			const exists = await checkEmailExists(email);
-			if (!exists) {
-				setError('我们在系统中无法找到你');
-				return;
-			}
-			
-			// 发送登录邮件
-			const result = await sendEmailLogin(email);
-			if (result.success) {
-				// 显示成功消息
-				setError(''); // 清除错误
-				alert('登录链接已发送到您的邮箱,请查收!');
-			} else {
-				setError(result.message || '发送登录邮件失败,请稍后重试');
-			}
+			await login({ username, password });
+			router.push('/dashboard');
 		} catch (err) {
 			setError(err instanceof Error ? err.message : '登录失败,请稍后重试');
 		} finally {
@@ -192,9 +179,9 @@ export function AuthPage() {
 
 					<AuthSeparator />
 
-					<form className="space-y-2" onSubmit={handleEmailLogin}>
+					<form className="space-y-2" onSubmit={handlePasswordLogin}>
 						<p className="text-white/60 text-start text-xs">
-							透过邮箱登录
+							使用账号密码登录
 						</p>
 						
 						{error && (
@@ -205,17 +192,29 @@ export function AuthPage() {
 
 						<div className="relative h-max">
 							<Input
-								placeholder="your.email@example.com"
+								placeholder="用户名 / 邮箱"
 								className="peer ps-9 bg-white/5 border-white/10 text-white placeholder:text-white/40"
-								type="email"
-								value={email}
-								onChange={(e) => setEmail(e.target.value)}
+								type="text"
+								value={username}
+								onChange={(e) => setUsername(e.target.value)}
 								required
 								disabled={isLoading || isSSOLoading || isGitHubLoading}
 							/>
 							<div className="text-white/60 pointer-events-none absolute inset-y-0 start-0 flex items-center justify-center ps-3 peer-disabled:opacity-50">
 								<AtSignIcon className="size-4" aria-hidden="true" />
 							</div>
+						</div>
+
+						<div className="relative h-max">
+							<Input
+								placeholder="密码"
+								className="bg-white/5 border-white/10 text-white placeholder:text-white/40"
+								type="password"
+								value={password}
+								onChange={(e) => setPassword(e.target.value)}
+								required
+								disabled={isLoading || isSSOLoading || isGitHubLoading}
+							/>
 						</div>
 
 						<Button

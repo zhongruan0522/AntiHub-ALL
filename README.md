@@ -29,6 +29,11 @@ docker compose up -d
 
 4) 访问前端：
 
+## Login
+
+- Recommended: Linux.do / GitHub SSO (first login auto-creates the user)
+- Username/password: set `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, restart backend once, then visit `/auth` to sign in
+
 - 直连：`http://localhost:3000`（或你在 `.env` 里设置的 `WEB_PORT`）
 - 或者用你自己的反代把域名转发到前端端口
 

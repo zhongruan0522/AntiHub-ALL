@@ -79,9 +79,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"✗ Redis 连接失败: {str(e)}")
         raise
+
+    # 启动时自动初始化管理员账号（可选）
+    try:
+        from app.db.session import get_session_maker
+        from app.utils.admin_init import ensure_admin_user
+
+        session_maker = get_session_maker()
+        async with session_maker() as session:
+            await ensure_admin_user(session)
+    except Exception as e:
+        logger.error(
+            f"初始化管理员账号失败: {type(e).__name__}: {str(e)}",
+            exc_info=True,
+        )
+        raise
     
     logger.info("🚀 应用启动完成")
-    
+     
     yield
     
     # 关闭事件
