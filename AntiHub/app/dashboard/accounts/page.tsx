@@ -65,7 +65,7 @@ export default function AccountsPage() {
   const toasterRef = useRef<ToasterRef>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [kiroAccounts, setKiroAccounts] = useState<KiroAccount[]>([]);
-  const [kiroBalances, setKiroBalances] = useState<Record<number, number>>({});
+  const [kiroBalances, setKiroBalances] = useState<Record<string, number>>({});
   const [hasBeta, setHasBeta] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -132,7 +132,7 @@ export default function AccountsPage() {
           setKiroAccounts(kiroData);
 
           // 加载每个Kiro账号的余额
-          const balances: Record<number, number> = {};
+          const balances: Record<string, number> = {};
           await Promise.all(
             kiroData.map(async (account) => {
               try {
@@ -305,7 +305,7 @@ export default function AccountsPage() {
     });
   };
 
-  const handleDeleteKiro = (accountId: number) => {
+  const handleDeleteKiro = (accountId: string) => {
     showConfirmDialog({
       title: '删除账号',
       description: '确定要删除这个 Kiro 账号吗？此操作无法撤销。',

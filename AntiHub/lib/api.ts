@@ -1426,16 +1426,17 @@ export async function sendChatCompletionStream(
 // ==================== Kiro 账号管理相关 API ====================
 
 export interface KiroAccount {
-  account_id: number;
-  user_id: number;
+  account_id: string;
+  user_id: string;
   account_name?: string | null;
-  email?: string | null;
-  provider: string;
-  is_shared: number; // 0=专属, 1=共享
+  auth_method?: 'Social' | 'IdC' | string;
+  is_shared?: number; // 0=专属, 1=共享（部分接口未返回）
   status: number; // 0=禁用, 1=启用
+  expires_at?: number | null;
+  email?: string | null;
+  subscription?: string | null;
   created_at: string;
-  updated_at: string;
-  last_used_at?: string | null;
+  updated_at?: string;
 }
 
 export interface KiroOAuthAuthorizeResponse {
@@ -1541,6 +1542,30 @@ export async function getKiroOAuthAuthorizeUrl(
   );
 }
 
+export interface CreateKiroAccountRequest {
+  refresh_token: string;
+  auth_method: 'Social' | 'IdC';
+  account_name?: string;
+  client_id?: string;
+  client_secret?: string;
+  machineid?: string;
+  is_shared?: number;
+}
+
+/**
+ * 导入/创建 Kiro 账号（Refresh Token）
+ */
+export async function createKiroAccount(payload: CreateKiroAccountRequest): Promise<KiroAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: KiroAccount }>(
+    `${API_BASE_URL}/api/kiro/accounts`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+  return result.data;
+}
+
 /**
  * 获取所有Kiro账号列表
  */
@@ -1555,7 +1580,7 @@ export async function getKiroAccounts(): Promise<KiroAccount[]> {
 /**
  * 获取单个Kiro账号详情
  */
-export async function getKiroAccount(accountId: number): Promise<KiroAccount> {
+export async function getKiroAccount(accountId: string): Promise<KiroAccount> {
   const result = await fetchWithAuth<{ success: boolean; data: KiroAccount }>(
     `${API_BASE_URL}/api/kiro/accounts/${accountId}`,
     { method: 'GET' }
@@ -1566,7 +1591,7 @@ export async function getKiroAccount(accountId: number): Promise<KiroAccount> {
 /**
  * 更新Kiro账号状态
  */
-export async function updateKiroAccountStatus(accountId: number, status: number): Promise<any> {
+export async function updateKiroAccountStatus(accountId: string, status: number): Promise<any> {
   const result = await fetchWithAuth<{ success: boolean; data: any }>(
     `${API_BASE_URL}/api/kiro/accounts/${accountId}/status`,
     {
@@ -1580,7 +1605,7 @@ export async function updateKiroAccountStatus(accountId: number, status: number)
 /**
  * 更新Kiro账号名称
  */
-export async function updateKiroAccountName(accountId: number, accountName: string): Promise<any> {
+export async function updateKiroAccountName(accountId: string, accountName: string): Promise<any> {
   const result = await fetchWithAuth<{ success: boolean; data: any }>(
     `${API_BASE_URL}/api/kiro/accounts/${accountId}/name`,
     {
@@ -1594,7 +1619,7 @@ export async function updateKiroAccountName(accountId: number, accountName: stri
 /**
  * 获取Kiro账号余额信息
  */
-export async function getKiroAccountBalance(accountId: number): Promise<KiroAccountBalance> {
+export async function getKiroAccountBalance(accountId: string): Promise<KiroAccountBalance> {
   const result = await fetchWithAuth<{ success: boolean; data: KiroAccountBalance }>(
     `${API_BASE_URL}/api/kiro/accounts/${accountId}/balance`,
     { method: 'GET' }
@@ -1606,7 +1631,7 @@ export async function getKiroAccountBalance(accountId: number): Promise<KiroAcco
  * 获取Kiro账号消费记录
  */
 export async function getKiroAccountConsumption(
-  accountId: number,
+  accountId: string,
   params?: {
     limit?: number;
     offset?: number;
@@ -1646,7 +1671,7 @@ export async function getKiroConsumptionStats(params?: {
 /**
  * 删除Kiro账号
  */
-export async function deleteKiroAccount(accountId: number): Promise<any> {
+export async function deleteKiroAccount(accountId: string): Promise<any> {
   const result = await fetchWithAuth<{ success: boolean; data: any }>(
     `${API_BASE_URL}/api/kiro/accounts/${accountId}`,
     { method: 'DELETE' }

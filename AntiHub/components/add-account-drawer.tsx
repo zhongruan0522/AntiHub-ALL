@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { getOAuthAuthorizeUrl, submitOAuthCallback, getKiroOAuthAuthorizeUrl, getCurrentUser, pollKiroOAuthStatus } from '@/lib/api';
+import { createKiroAccount, getOAuthAuthorizeUrl, submitOAuthCallback, getKiroOAuthAuthorizeUrl, getCurrentUser, pollKiroOAuthStatus } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Button as StatefulButton } from '@/components/ui/stateful-button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Drawer,
   DrawerContent,
@@ -34,6 +35,12 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const [provider, setProvider] = useState<'Google' | 'Github' | ''>(''); // Kiro OAuth提供商
   const [accountType, setAccountType] = useState<0 | 1>(0); // 0=专属, 1=共享
   const [loginMethod, setLoginMethod] = useState<'antihook' | 'manual' | ''>(''); // Antigravity 登录方式
+  const [kiroLoginMethod, setKiroLoginMethod] = useState<'oauth' | 'refresh_token' | ''>('');
+  const [kiroImportAuthMethod, setKiroImportAuthMethod] = useState<'Social' | 'IdC'>('Social');
+  const [kiroImportRefreshToken, setKiroImportRefreshToken] = useState('');
+  const [kiroImportClientId, setKiroImportClientId] = useState('');
+  const [kiroImportClientSecret, setKiroImportClientSecret] = useState('');
+  const [kiroImportAccountName, setKiroImportAccountName] = useState('');
   const [oauthUrl, setOauthUrl] = useState('');
   const [oauthState, setOauthState] = useState(''); // Kiro OAuth state
   const [callbackUrl, setCallbackUrl] = useState('');
@@ -86,7 +93,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       }
       // Kiro需要选择OAuth提供商
       if (platform === 'kiro') {
-        setStep('provider');
+        setStep('method');
       } else {
         setStep('type');
       }
@@ -107,6 +114,25 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         setStep('method');
       } else {
         // Kiro 账号直接进入授权
+        if (kiroLoginMethod === 'refresh_token') {
+          setOauthUrl('');
+          setOauthState('');
+          setCountdown(600);
+          setIsWaitingAuth(false);
+          setStep('authorize');
+          return;
+        }
+
+        if (kiroLoginMethod !== 'oauth') {
+          toasterRef.current?.show({
+            title: '选择方式',
+            message: '请选择添加方式',
+            variant: 'warning',
+            position: 'top-right',
+          });
+          return;
+        }
+
         try {
           const result = await getKiroOAuthAuthorizeUrl(provider as 'Google' | 'Github', accountType);
           setOauthUrl(result.data.auth_url);
@@ -127,6 +153,26 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         }
       }
     } else if (step === 'method') {
+      if (platform === 'kiro') {
+        if (!kiroLoginMethod) {
+          toasterRef.current?.show({
+            title: '选择方式',
+            message: '请选择添加方式',
+            variant: 'warning',
+            position: 'top-right',
+          });
+          return;
+        }
+
+        if (kiroLoginMethod === 'oauth') {
+          setStep('provider');
+          return;
+        }
+
+        setStep('type');
+        return;
+      }
+
       if (!loginMethod) {
         toasterRef.current?.show({
           title: '选择登录方式',
@@ -169,17 +215,39 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
 
   const handleBack = () => {
     if (step === 'provider') {
-      setStep('platform');
+      setStep('method');
     } else if (step === 'type') {
       if (platform === 'kiro') {
-        setStep('provider');
+        if (kiroLoginMethod === 'oauth') {
+          setStep('provider');
+        } else {
+          setStep('method');
+        }
       } else {
         setStep('platform');
       }
     } else if (step === 'method') {
-      setStep('type');
-      setLoginMethod('');
+      if (platform === 'antigravity') {
+        setStep('type');
+        setLoginMethod('');
+      } else {
+        setStep('platform');
+        setKiroLoginMethod('');
+      }
     } else if (step === 'authorize') {
+      if (platform === 'kiro') {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        if (pollTimerRef.current) {
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+        setIsWaitingAuth(false);
+        setCountdown(600);
+      }
+
       if (platform === 'antigravity') {
         setStep('method');
       } else {
@@ -342,6 +410,64 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     }
   };
 
+  const handleImportKiroAccount = async () => {
+    const refreshToken = kiroImportRefreshToken.trim();
+    if (!refreshToken) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '请粘贴 refresh_token',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    const accountName = kiroImportAccountName.trim();
+    const clientId = kiroImportClientId.trim();
+    const clientSecret = kiroImportClientSecret.trim();
+
+    if (kiroImportAuthMethod === 'IdC' && (!clientId || !clientSecret)) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: 'IdC 方式需要 client_id 和 client_secret',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    try {
+      await createKiroAccount({
+        refresh_token: refreshToken,
+        auth_method: kiroImportAuthMethod,
+        account_name: accountName || undefined,
+        client_id: kiroImportAuthMethod === 'IdC' ? clientId : undefined,
+        client_secret: kiroImportAuthMethod === 'IdC' ? clientSecret : undefined,
+        is_shared: accountType,
+      });
+
+      toasterRef.current?.show({
+        title: '添加成功',
+        message: 'Kiro 账号已导入',
+        variant: 'success',
+        position: 'top-right',
+      });
+
+      window.dispatchEvent(new CustomEvent('accountAdded'));
+      onOpenChange(false);
+      resetState();
+      onSuccess?.();
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '导入失败',
+        message: err instanceof Error ? err.message : '导入 Kiro 账号失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
   const resetState = () => {
     // 清除所有定时器
     if (timerRef.current) {
@@ -358,6 +484,12 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     setProvider('');
     setAccountType(0);
     setLoginMethod('');
+    setKiroLoginMethod('');
+    setKiroImportAuthMethod('Social');
+    setKiroImportRefreshToken('');
+    setKiroImportClientId('');
+    setKiroImportClientSecret('');
+    setKiroImportAccountName('');
     setOauthUrl('');
     setOauthState('');
     setCallbackUrl('');
@@ -671,6 +803,60 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
           )}
 
           {/* 步骤 4: 选择登录方式 (仅Antigravity) */}
+          {step === 'method' && platform === 'kiro' && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                选择添加方式
+              </p>
+
+              <div className="space-y-3">
+                <label
+                  className={cn(
+                    "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    kiroLoginMethod === 'oauth' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="kiroLoginMethod"
+                    value="oauth"
+                    checked={kiroLoginMethod === 'oauth'}
+                    onChange={() => setKiroLoginMethod('oauth')}
+                    className="w-4 h-4 mt-1"
+                  />
+                  <div className="flex-1">
+                    <h3 className="font-semibold">一键登录（OAuth）</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Google / Github 授权，完成后自动添加账号
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  className={cn(
+                    "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    kiroLoginMethod === 'refresh_token' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="kiroLoginMethod"
+                    value="refresh_token"
+                    checked={kiroLoginMethod === 'refresh_token'}
+                    onChange={() => setKiroLoginMethod('refresh_token')}
+                    className="w-4 h-4 mt-1"
+                  />
+                  <div className="flex-1">
+                    <h3 className="font-semibold">Refresh Token 导入</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      直接粘贴 refresh_token 导入账号（适合已有 Token）
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+
           {step === 'method' && platform === 'antigravity' && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
@@ -740,7 +926,124 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
           {/* 步骤 5: OAuth 授权 */}
           {step === 'authorize' && (
             <div className="space-y-6">
-              {platform === 'kiro' ? (
+              {platform === 'kiro' && kiroLoginMethod === 'refresh_token' ? (
+                <>
+                  <div className="space-y-3">
+                    <Label className="text-base font-semibold">Refresh Token 导入</Label>
+                    <p className="text-sm text-muted-foreground">
+                      粘贴 refresh_token 后，服务端会校验并自动拉取账号信息。
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label htmlFor="kiro-account-name" className="text-base font-semibold">
+                      账号名称（可选）
+                    </Label>
+                    <Input
+                      id="kiro-account-name"
+                      placeholder="给这个账号起个名字（可不填）"
+                      value={kiroImportAccountName}
+                      onChange={(e) => setKiroImportAccountName(e.target.value)}
+                      className="h-12"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label className="text-base font-semibold">认证方式</Label>
+                    <div className="space-y-3">
+                      <label
+                        className={cn(
+                          "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                          kiroImportAuthMethod === 'Social' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="kiroAuthMethod"
+                          value="Social"
+                          checked={kiroImportAuthMethod === 'Social'}
+                          onChange={() => setKiroImportAuthMethod('Social')}
+                          className="w-4 h-4 mt-1"
+                        />
+                        <div className="flex-1">
+                          <h3 className="font-semibold">Social</h3>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            一般情况下选这个
+                          </p>
+                        </div>
+                      </label>
+
+                      <label
+                        className={cn(
+                          "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                          kiroImportAuthMethod === 'IdC' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="kiroAuthMethod"
+                          value="IdC"
+                          checked={kiroImportAuthMethod === 'IdC'}
+                          onChange={() => setKiroImportAuthMethod('IdC')}
+                          className="w-4 h-4 mt-1"
+                        />
+                        <div className="flex-1">
+                          <h3 className="font-semibold">IdC</h3>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            需要同时提供 client_id / client_secret
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
+                  {kiroImportAuthMethod === 'IdC' && (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="kiro-client-id" className="text-base font-semibold">
+                          client_id
+                        </Label>
+                        <Input
+                          id="kiro-client-id"
+                          placeholder="请输入 client_id"
+                          value={kiroImportClientId}
+                          onChange={(e) => setKiroImportClientId(e.target.value)}
+                          className="h-12 font-mono text-sm"
+                          autoComplete="off"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="kiro-client-secret" className="text-base font-semibold">
+                          client_secret
+                        </Label>
+                        <Input
+                          id="kiro-client-secret"
+                          placeholder="请输入 client_secret"
+                          value={kiroImportClientSecret}
+                          onChange={(e) => setKiroImportClientSecret(e.target.value)}
+                          className="h-12 font-mono text-sm"
+                          autoComplete="off"
+                          type="password"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    <Label htmlFor="kiro-refresh-token" className="text-base font-semibold">
+                      refresh_token
+                    </Label>
+                    <Textarea
+                      id="kiro-refresh-token"
+                      placeholder="在此粘贴 refresh_token"
+                      value={kiroImportRefreshToken}
+                      onChange={(e) => setKiroImportRefreshToken(e.target.value)}
+                      className="font-mono text-sm min-h-[140px]"
+                    />
+                  </div>
+                </>
+              ) : platform === 'kiro' ? (
                 // Kiro账号 - 显示等待授权状态
                 <>
                   <div className="space-y-3">
@@ -886,13 +1189,26 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
           {step === 'authorize' ? (
             platform === 'kiro' ? (
               // Kiro账号不需要手动提交
-              <Button
-                onClick={handleClose}
-                disabled={isWaitingAuth && countdown > 0}
-                className="flex-1 cursor-pointer"
-              >
-                {isWaitingAuth && countdown > 0 ? '等待授权中...' : '关闭'}
-              </Button>
+              kiroLoginMethod === 'refresh_token' ? (
+                <StatefulButton
+                  onClick={handleImportKiroAccount}
+                  disabled={
+                    !kiroImportRefreshToken.trim() ||
+                    (kiroImportAuthMethod === 'IdC' && (!kiroImportClientId.trim() || !kiroImportClientSecret.trim()))
+                  }
+                  className="flex-1 cursor-pointer"
+                >
+                  完成导入
+                </StatefulButton>
+              ) : (
+                <Button
+                  onClick={handleClose}
+                  disabled={isWaitingAuth && countdown > 0}
+                  className="flex-1 cursor-pointer"
+                >
+                  {isWaitingAuth && countdown > 0 ? '等待授权中...' : '关闭'}
+                </Button>
+              )
             ) : (
               // Antigravity账号需要提交回调
               <StatefulButton
@@ -906,7 +1222,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
           ) : step === 'method' ? (
             <Button
               onClick={handleContinue}
-              disabled={!loginMethod}
+              disabled={platform === 'antigravity' ? !loginMethod : !kiroLoginMethod}
               className="flex-1 cursor-pointer"
             >
               继续
