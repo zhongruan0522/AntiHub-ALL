@@ -32,6 +32,16 @@ jobs:
               - 'AntiHub-Backend/**'
             plugin:
               - 'AntiHub-plugin/**'
+          ignore: |
+            **/*.md
+            docs/**
+            .env
+            .env.example
+            docker-compose*.yml
+            docker-compose*.yaml
+            README*
+            LICENSE
+            .gitignore
 
   # 构建 Web 镜像
   build-web:
