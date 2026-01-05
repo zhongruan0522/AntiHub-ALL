@@ -10,6 +10,31 @@ import { countStringTokens } from '../utils/token_counter.js';
 
 const router = express.Router();
 
+const decodeBase64UrlToString = (value) => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = (4 - (normalized.length % 4)) % 4;
+  const padded = normalized + '='.repeat(padLength);
+  try {
+    return Buffer.from(padded, 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+};
+
+const tryDecodeJwtPayload = (token) => {
+  if (typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  const payloadString = decodeBase64UrlToString(parts[1]);
+  if (!payloadString) return null;
+  try {
+    return JSON.parse(payloadString);
+  } catch {
+    return null;
+  }
+};
+
 /**
  * API Key认证中间件
  */
@@ -302,6 +327,7 @@ router.post('/api/kiro/accounts', authenticateApiKey, async (req, res) => {
     // 先测试token是否有效
     logger.info('测试Kiro token有效性...');
     const tokenData = await kiroService.refreshToken({
+      machineid,
       auth: auth_method,
       refreshToken: refresh_token,
       clientId: client_id,
@@ -314,7 +340,11 @@ router.post('/api/kiro/accounts', authenticateApiKey, async (req, res) => {
     logger.info('获取Kiro使用量信息...');
     let usageLimitsData = {};
     try {
-      usageLimitsData = await kiroService.getUsageLimits(tokenData.access_token);
+      usageLimitsData = await kiroService.getUsageLimits(
+        tokenData.access_token,
+        tokenData.profile_arn,
+        machineid
+      );
       logger.info('使用量信息获取成功:', usageLimitsData);
     } catch (error) {
       logger.warn('获取使用量信息失败，使用请求中提供的值:', error.message);
@@ -322,7 +352,18 @@ router.post('/api/kiro/accounts', authenticateApiKey, async (req, res) => {
 
     // 合并使用量数据（请求中的值优先，如果没有则使用API获取的值）
     const finalEmail = email || usageLimitsData.email;
-    const finalUserid = userid || usageLimitsData.userid;
+    let finalUserid = userid || usageLimitsData.userid;
+    if (!finalUserid && typeof tokenData.profile_arn === 'string') {
+      const extracted = tokenData.profile_arn.split('/').pop();
+      if (extracted) finalUserid = extracted;
+    }
+    if (!finalUserid) {
+      const payload = tryDecodeJwtPayload(tokenData.access_token);
+      finalUserid = payload?.userId || payload?.userid || payload?.user_id || payload?.sub || null;
+    }
+    if (!finalUserid) {
+      return res.status(400).json({ error: '无法从token解析userid，请在请求体中手动提供userid' });
+    }
     const finalSubscription = subscription || usageLimitsData.subscription || 'unknown';
     const finalCurrentUsage = current_usage !== undefined ? current_usage : (usageLimitsData.current_usage || 0);
     const finalResetDate = reset_date || usageLimitsData.reset_date || new Date().toISOString();
