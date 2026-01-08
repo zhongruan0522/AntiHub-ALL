@@ -23,7 +23,7 @@ const defaultConfig = {
     url: 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse',
     modelsUrl: 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels',
     host: 'daily-cloudcode-pa.sandbox.googleapis.com',
-    userAgent: 'antigravity/ windows/amd64',
+    userAgent: 'antigravity/1.11.3 windows/amd64',
     endpoints: API_ENDPOINTS
   },
   defaults: { temperature: 1, top_p: 0.85, top_k: 50, max_tokens: 8096 },
