@@ -14,9 +14,9 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      web: ${{ steps.filter.outputs.web }}
-      backend: ${{ steps.filter.outputs.backend }}
-      plugin: ${{ steps.filter.outputs.plugin }}
+      web: ${{ steps.force.outputs.web || steps.filter.outputs.web }}
+      backend: ${{ steps.force.outputs.backend || steps.filter.outputs.backend }}
+      plugin: ${{ steps.force.outputs.plugin || steps.filter.outputs.plugin }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,6 +42,14 @@ jobs:
             README*
             LICENSE
             .gitignore
+
+      - name: Force build all on manual dispatch or tag
+        id: force
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "web=true" >> $GITHUB_OUTPUT
+          echo "backend=true" >> $GITHUB_OUTPUT
+          echo "plugin=true" >> $GITHUB_OUTPUT
 
   # 构建 Web 镜像
   build-web:
