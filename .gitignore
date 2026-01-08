@@ -5,4 +5,5 @@ AntiHub-scripts-main/
 2-参考项目/
 3-error/
 4-附属子项目/
-.pnpm-store\v10/
+.pnpm-store/v10/
+.kiro/
