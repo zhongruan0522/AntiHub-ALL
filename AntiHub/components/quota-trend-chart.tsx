@@ -148,7 +148,7 @@ export function QuotaTrendChart() {
       <Card className="@container/card">
         <CardHeader>
           <CardTitle>配额消耗趋势</CardTitle>
-          <CardDescription>共享池配额使用情况</CardDescription>
+          <CardDescription>配额使用情况</CardDescription>
         </CardHeader>
         <CardContent className="flex items-center justify-center h-[250px]">
           <div className="text-red-500 text-sm">{error}</div>

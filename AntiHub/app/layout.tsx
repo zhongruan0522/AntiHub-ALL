@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "AntiHub",
-  description: "共享账号管理系统",
+  description: "AI 账号管理系统",
 };
 
 export default function RootLayout({

@@ -78,7 +78,7 @@ export default function Home() {
         <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 lg:px-8 py-20 md:py-32">
           <div className="flex flex-col items-center text-center space-y-8">
             <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold tracking-tight max-w-4xl text-white">
-              共享 AI 算力
+              管理你的 AI 账号
               <br />
               释放<ColourfulText text="无限可能" />
             </h1>
@@ -179,7 +179,7 @@ export default function Home() {
               为什么选择 AntiHub
             </h2>
             <p className="text-lg text-gray-400 max-w-2xl mx-auto">
-              我们提供最先进的 AI 资源管理和共享解决方案
+              我们提供简洁可靠的 AI 账号与配额管理体验
             </p>
           </div>
 
@@ -268,7 +268,7 @@ export default function Home() {
                 准备好开始了吗？
               </h2>
               <p className="text-lg text-gray-400 max-w-2xl">
-                立即注册 AntiHub，体验全新的 AI 资源共享方式
+                立即注册 AntiHub，开始管理你的 AI 账号
               </p>
               <div className="flex flex-col sm:flex-row gap-4 mt-8">
                 <Link href={isLoggedIn ? "/dashboard" : "/auth"}>
@@ -290,7 +290,7 @@ export default function Home() {
                 <span className="font-bold">AntiHub</span>
               </div>
               <p className="text-sm text-gray-400">
-                共享 AI 算力，释放无限可能
+                管理 AI 账号，释放无限可能
               </p>
             </div>
             <div>

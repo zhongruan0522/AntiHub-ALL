@@ -251,14 +251,34 @@ class QwenService {
 
   /**
    * 将 QwenCli 导出的 expired 字段解析成毫秒时间戳
-   * @param {string|null|undefined} expired
+   * @param {string|number|null|undefined} expired
    * @returns {number|null}
    */
   parseExpiredToMillis(expired) {
-    if (typeof expired !== 'string' || !expired.trim()) return null;
-    const t = Date.parse(expired.trim());
-    if (Number.isNaN(t)) return null;
-    return t;
+    if (expired == null) return null;
+
+    if (typeof expired === 'number' && Number.isFinite(expired)) {
+      const n = Math.floor(expired);
+      if (n <= 0) return null;
+      // Heuristic: treat values below 1e12 as seconds.
+      return n < 1e12 ? n * 1000 : n;
+    }
+
+    if (typeof expired !== 'string') return null;
+    const trimmed = expired.trim();
+    if (!trimmed) return null;
+
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) return parsed;
+
+    // Some exports use numeric timestamps serialized as strings.
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const n = Math.floor(numeric);
+      return n < 1e12 ? n * 1000 : n;
+    }
+
+    return null;
   }
 
   /**

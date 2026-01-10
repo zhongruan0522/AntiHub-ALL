@@ -573,7 +573,7 @@ export interface Account {
   name?: string;
   email?: string;
   status: number; // 0=禁用, 1=启用
-  is_shared: number; // 0=专属, 1=共享
+  is_shared: number;
   need_refresh?: boolean; // 是否需要重新登录
   project_id_0?: string; // 项目ID
   is_restricted?: boolean; // 是否被限制
@@ -659,32 +659,6 @@ export async function updateAccountStatus(cookieId: string, status: number): Pro
     {
       method: 'PUT',
       body: JSON.stringify({ status }),
-    }
-  );
-  return result.data;
-}
-
-/**
- * 转换账号类型（专属/共享）
- * @param cookieId 账号的 Cookie ID
- * @param isShared 账号类型：0=专属，1=共享
- */
-export async function updateAccountType(cookieId: string, isShared: number): Promise<{
-  cookie_id: string;
-  is_shared: number;
-}> {
-  const result = await fetchWithAuth<{
-    success: boolean;
-    message: string;
-    data: {
-      cookie_id: string;
-      is_shared: number;
-    };
-  }>(
-    `${API_BASE_URL}/api/plugin-api/accounts/${cookieId}/type`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ is_shared: isShared }),
     }
   );
   return result.data;
@@ -828,31 +802,6 @@ export async function updateQuotaStatus(cookieId: string, modelName: string, sta
   return result.data;
 }
 
-/**
- * 更新 Cookie 优先级
- */
-export async function updateCookiePreference(preferShared: number): Promise<any> {
-  const result = await fetchWithAuth<{ success: boolean; data: any }>(
-    `${API_BASE_URL}/api/plugin-api/preference`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ prefer_shared: preferShared }),
-    }
-  );
-  return result.data;
-}
-
-/**
- * 获取 Cookie 优先级设置
- */
-export async function getCookiePreference(): Promise<{ prefer_shared: number }> {
-  const result = await fetchWithAuth<{ success: boolean; data: { prefer_shared: number } }>(
-    `${API_BASE_URL}/api/plugin-api/preference`,
-    { method: 'GET' }
-  );
-  return result.data;
-}
-
 // ==================== 配额管理相关 API ====================
 
 export interface UserQuotaItem {
@@ -873,44 +822,7 @@ export interface QuotaConsumption {
   quota_before: string;
   quota_after: string;
   quota_consumed: string;
-  is_shared: number;
   consumed_at: string;
-}
-
-export interface SharedPoolModelQuota {
-  model_name: string;
-  total_quota: string;
-  earliest_reset_time: string | null;
-  available_cookies: string;
-  status: number;
-  last_fetched_at: string;
-}
-
-export interface UserConsumption {
-  total_requests: number;
-  total_quota_consumed: number;
-}
-
-export interface SharedPoolQuotasResponse {
-  quotas: SharedPoolModelQuota[];
-  user_consumption: UserConsumption;
-}
-
-export interface SharedPoolModelStats {
-  total_quota: number;
-  available_cookies: number;
-  earliest_reset_time: string | null;
-  status: number;
-}
-
-export interface SharedPoolStats {
-  accounts: {
-    total_shared: number;
-    active_shared: number;
-    inactive_shared: number;
-  };
-  quotas_by_model: Record<string, SharedPoolModelStats>;
-  note?: string;
 }
 
 /**
@@ -940,36 +852,6 @@ export async function getQuotaConsumption(params?: {
   const url = `${API_BASE_URL}/api/plugin-api/quotas/consumption${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
   
   const result = await fetchWithAuth<{ success: boolean; data: QuotaConsumption[] }>(url, { method: 'GET' });
-  return result.data;
-}
-
-/**
- * 获取共享池配额信息（新版本，包含用户消费统计）
- */
-export async function getSharedPoolQuotas(): Promise<SharedPoolQuotasResponse> {
-  const result = await fetchWithAuth<{ success: boolean; data: SharedPoolQuotasResponse }>(
-    `${API_BASE_URL}/api/plugin-api/quotas/shared-pool`,
-    { method: 'GET' }
-  );
-  return result.data;
-}
-
-/**
- * 获取共享池配额列表（仅配额列表，兼容旧代码）
- */
-export async function getSharedPoolQuotasList(): Promise<SharedPoolModelQuota[]> {
-  const result = await getSharedPoolQuotas();
-  return result.quotas;
-}
-
-/**
- * 获取共享池统计信息
- */
-export async function getSharedPoolStats(): Promise<SharedPoolStats> {
-  const result = await fetchWithAuth<{ success: boolean; data: SharedPoolStats }>(
-    `${API_BASE_URL}/api/usage/shared-pool/stats`,
-    { method: 'GET' }
-  );
   return result.data;
 }
 
@@ -1415,7 +1297,6 @@ export interface KiroAccount {
   user_id: string;
   account_name?: string | null;
   auth_method?: 'Social' | 'IdC' | string;
-  is_shared?: number; // 0=专属, 1=共享（部分接口未返回）
   status: number; // 0=禁用, 1=启用
   expires_at?: number | null;
   email?: string | null;
@@ -1477,7 +1358,6 @@ export interface KiroConsumptionLog {
   account_id: string;
   model_id: string;
   credit_used: number;
-  is_shared: number;
   consumed_at: string;
   account_name: string;
 }
@@ -1507,8 +1387,6 @@ export interface KiroConsumptionStats {
   total_requests: string;
   total_credit: string;
   avg_credit: string;
-  shared_credit: string;
-  private_credit: string;
 }
 
 /**
@@ -1740,7 +1618,6 @@ export async function pollQwenOAuthStatus(state: string): Promise<{
 export interface QwenAccount {
   account_id: string;
   user_id: string;
-  is_shared: number; // 0=专属, 1=共享
   status: number; // 0=禁用, 1=启用
   need_refresh: boolean;
   expires_at: number | null;

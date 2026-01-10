@@ -20,7 +20,7 @@ function DashboardContent() {
 
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-      {/* 共享配额池统计卡片 */}
+      {/* 统计卡片 */}
       <SectionCards />
 
       {/* 配额消耗趋势图表 */}

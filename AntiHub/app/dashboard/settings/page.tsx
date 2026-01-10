@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { getAPIKeys, generateAPIKey, deleteAPIKey, getCookiePreference, updateCookiePreference, type PluginAPIKey } from '@/lib/api';
+import { getAPIKeys, generateAPIKey, deleteAPIKey, type PluginAPIKey } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -31,8 +31,6 @@ export default function SettingsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [deletingKeyId, setDeletingKeyId] = useState<number | null>(null);
-  const [preferShared, setPreferShared] = useState<number>(0); // 0=专属优先, 1=共享优先
-  const [isUpdatingPreference, setIsUpdatingPreference] = useState(false);
   const [selectedConfigType, setSelectedConfigType] = useState<'antigravity' | 'kiro' | 'qwen'>('antigravity');
   const [keyName, setKeyName] = useState('');
 
@@ -54,47 +52,13 @@ export default function SettingsPage() {
     }
   };
 
-  const loadPreference = async () => {
-    try {
-      const data = await getCookiePreference();
-      setPreferShared(data.prefer_shared);
-    } catch (err) {
-      // 如果获取失败，使用默认值
-      setPreferShared(0);
-    }
-  };
-
   useEffect(() => {
     const loadData = async () => {
-      await Promise.all([loadAPIKeys(), loadPreference()]);
+      await loadAPIKeys();
       setIsLoading(false);
     };
     loadData();
   }, []);
-
-  const handleUpdatePreference = async (newPreference: number) => {
-    setIsUpdatingPreference(true);
-
-    try {
-      await updateCookiePreference(newPreference);
-      setPreferShared(newPreference);
-      toasterRef.current?.show({
-        title: '更新成功',
-        message: '已保存账户偏好设置',
-        variant: 'success',
-        position: 'top-right',
-      });
-    } catch (err) {
-      toasterRef.current?.show({
-        title: '更新失败',
-        message: err instanceof Error ? err.message : '更新偏好设置失败',
-        variant: 'error',
-        position: 'top-right',
-      });
-    } finally {
-      setIsUpdatingPreference(false);
-    }
-  };
 
   const handleOpenCreateDialog = () => {
     setKeyName('');
@@ -300,70 +264,6 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* 账号优先级设置 */}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              偏好设置
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-3">
-              {/* 专属账号优先 */}
-              <label
-                className={cn(
-                  "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                  preferShared === 0 ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                )}
-              >
-                <input
-                  type="radio"
-                  name="preference"
-                  value="0"
-                  checked={preferShared === 0}
-                  onChange={() => handleUpdatePreference(0)}
-                  disabled={isUpdatingPreference}
-                  className="w-4 h-4 mt-1"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold">优先使用专属账号</h3>
-                  </div>
-                </div>
-              </label>
-
-              {/* 共享账号优先 */}
-              <label
-                className={cn(
-                  "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
-                  preferShared === 1 ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                )}
-              >
-                <input
-                  type="radio"
-                  name="preference"
-                  value="1"
-                  checked={preferShared === 1}
-                  onChange={() => handleUpdatePreference(1)}
-                  disabled={isUpdatingPreference}
-                  className="w-4 h-4 mt-1"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold">优先使用共享账号</h3>
-                  </div>
-                </div>
-              </label>
-            </div>
-
-            {isUpdatingPreference && (
-              <div className="flex items-center justify-center py-4">
-                <MorphingSquare message="更新中..." />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
         {/* API 端点信息 */}
         <Card className="mt-6">
           <CardHeader>
@@ -395,7 +295,7 @@ export default function SettingsPage() {
                 <IconAlertTriangle className="size-5 text-yellow-500 shrink-0 mt-0.5" />
                 <div className="space-y-2 text-sm">
                   <p className="font-medium text-yellow-500">注意</p>
-                  <p className="font-sm text-muted-foreground">你需要提供有效的 API 密钥才能访问此端点。要获取模型列表，你的账户内必须具有有效的专属账号或共享账号配额。我们支持 OpenAI 格式或 Anthropic 格式的消息。</p>
+                  <p className="font-sm text-muted-foreground">你需要提供有效的 API 密钥才能访问此端点。要获取模型列表，你的账户内至少需要添加一个可用账号。我们支持 OpenAI 格式或 Anthropic 格式的消息。</p>
                 </div>
               </div>
             </div>

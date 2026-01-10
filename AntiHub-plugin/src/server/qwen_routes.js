@@ -64,6 +64,136 @@ function toSafeAccount(account) {
 
 const qwenOAuthStateKey = (state) => `qwen_oauth:${state}`;
 
+function toTrimmedString(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    const str = toTrimmedString(value);
+    if (str) return str;
+  }
+  return null;
+}
+
+function asPlainObject(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) return null;
+  return value;
+}
+
+function safeParseCredentialJSON(raw) {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.replace(/^\uFEFF/, '').trim();
+  if (!normalized) return null;
+
+  try {
+    return JSON.parse(normalized);
+  } catch {
+    // Some users paste logs + JSON together; try best-effort extraction.
+  }
+
+  const firstObjectStart = normalized.indexOf('{');
+  const lastObjectEnd = normalized.lastIndexOf('}');
+  if (firstObjectStart >= 0 && lastObjectEnd > firstObjectStart) {
+    try {
+      return JSON.parse(normalized.slice(firstObjectStart, lastObjectEnd + 1));
+    } catch {
+      // ignore
+    }
+  }
+
+  const firstArrayStart = normalized.indexOf('[');
+  const lastArrayEnd = normalized.lastIndexOf(']');
+  if (firstArrayStart >= 0 && lastArrayEnd > firstArrayStart) {
+    try {
+      return JSON.parse(normalized.slice(firstArrayStart, lastArrayEnd + 1));
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+function normalizeImportedQwenCredential(raw) {
+  let root = raw;
+  if (Array.isArray(root)) {
+    if (root.length === 1) root = root[0];
+    else return { error: '暂不支持批量导入，请只导入单个账号的 JSON' };
+  }
+
+  const obj = asPlainObject(root);
+  if (!obj) return { error: 'credential_json 解析结果不是对象' };
+
+  const nested =
+    asPlainObject(obj.credential) ||
+    asPlainObject(obj.token) ||
+    asPlainObject(obj.auth) ||
+    asPlainObject(obj.data) ||
+    null;
+
+  const type = firstNonEmptyString(obj.type, nested?.type, obj.provider, nested?.provider);
+  const accessToken = firstNonEmptyString(
+    obj.access_token,
+    obj.accessToken,
+    nested?.access_token,
+    nested?.accessToken,
+    typeof obj.token === 'string' ? obj.token : null,
+    nested?.token
+  );
+  const refreshToken = firstNonEmptyString(
+    obj.refresh_token,
+    obj.refreshToken,
+    nested?.refresh_token,
+    nested?.refreshToken
+  );
+  const email = firstNonEmptyString(obj.email, nested?.email, obj.account_email, obj.accountEmail);
+  const resourceURL = firstNonEmptyString(
+    obj.resource_url,
+    obj.resourceURL,
+    obj.resourceUrl,
+    nested?.resource_url,
+    nested?.resourceURL,
+    nested?.resourceUrl
+  );
+  const expiredValue = firstNonEmptyString(
+    obj.expired,
+    obj.expiry_date,
+    obj.expiry,
+    obj.expire,
+    nested?.expired,
+    nested?.expiry_date,
+    nested?.expiry,
+    nested?.expire
+  );
+  const expiresAtCandidate =
+    expiredValue ??
+    obj.expires_at ??
+    obj.expiresAt ??
+    nested?.expires_at ??
+    nested?.expiresAt ??
+    null;
+  const lastRefresh = firstNonEmptyString(
+    obj.last_refresh,
+    obj.lastRefresh,
+    nested?.last_refresh,
+    nested?.lastRefresh
+  );
+
+  return {
+    type,
+    accessToken,
+    refreshToken,
+    email,
+    resourceURL,
+    expiresAtCandidate,
+    lastRefresh,
+  };
+}
+
 /**
  * Qwen OAuth（Device Flow）
  * POST /api/qwen/oauth/authorize
@@ -242,9 +372,8 @@ router.post('/api/qwen/accounts/import', authenticateApiKey, async (req, res) =>
 
     let creds = credential;
     if (!creds && typeof credential_json === 'string') {
-      try {
-        creds = JSON.parse(credential_json);
-      } catch {
+      creds = safeParseCredentialJSON(credential_json);
+      if (!creds) {
         return res.status(400).json({ error: 'credential_json不是有效JSON' });
       }
     }
@@ -253,21 +382,30 @@ router.post('/api/qwen/accounts/import', authenticateApiKey, async (req, res) =>
       return res.status(400).json({ error: '缺少credential或credential_json' });
     }
 
-    const type = typeof creds.type === 'string' ? creds.type.trim() : '';
+    const normalized = normalizeImportedQwenCredential(creds);
+    if (normalized?.error) {
+      return res.status(400).json({ error: normalized.error });
+    }
+
+    const type =
+      typeof normalized.type === 'string' ? normalized.type.trim().toLowerCase() : '';
     if (type && type !== 'qwen') {
       return res.status(400).json({ error: '只支持type=qwen的凭证文件' });
     }
 
-    const accessToken = typeof creds.access_token === 'string' ? creds.access_token.trim() : '';
+    const accessToken =
+      typeof normalized.accessToken === 'string' ? normalized.accessToken.trim() : '';
     if (!accessToken) {
       return res.status(400).json({ error: '缺少access_token' });
     }
 
-    const refreshToken = typeof creds.refresh_token === 'string' ? creds.refresh_token.trim() : null;
-    const email = typeof creds.email === 'string' ? creds.email.trim() : null;
-    const resourceURL = qwenService.normalizeResourceURL(creds.resource_url);
-    const expiresAt = qwenService.parseExpiredToMillis(creds.expired);
-    const lastRefresh = typeof creds.last_refresh === 'string' ? creds.last_refresh.trim() : null;
+    const refreshToken =
+      typeof normalized.refreshToken === 'string' ? normalized.refreshToken.trim() : null;
+    const email = typeof normalized.email === 'string' ? normalized.email.trim() : null;
+    const resourceURL = qwenService.normalizeResourceURL(normalized.resourceURL);
+    const expiresAt = qwenService.parseExpiredToMillis(normalized.expiresAtCandidate);
+    const lastRefresh =
+      typeof normalized.lastRefresh === 'string' ? normalized.lastRefresh.trim() : null;
 
     const name =
       (typeof account_name === 'string' ? account_name.trim() : '') ||

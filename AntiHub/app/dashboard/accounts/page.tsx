@@ -6,7 +6,6 @@ import {
   deleteAccount,
   updateAccountStatus,
   updateAccountName,
-  updateAccountType,
   getAccountQuotas,
   getAntigravityAccountDetail,
   updateQuotaStatus,
@@ -55,7 +54,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip } from '@/components/ui/tooltip-card';
-import { IconCirclePlusFilled, IconDotsVertical, IconRefresh, IconTrash, IconToggleLeft, IconToggleRight, IconExternalLink, IconChartBar, IconEdit, IconAlertTriangle, IconArrowsExchange } from '@tabler/icons-react';
+import { IconCirclePlusFilled, IconDotsVertical, IconRefresh, IconTrash, IconToggleLeft, IconToggleRight, IconExternalLink, IconChartBar, IconEdit, IconAlertTriangle } from '@tabler/icons-react';
 import {
   Select,
   SelectContent,
@@ -259,43 +258,6 @@ export default function AccountsPage() {
       setIsConfirmDialogOpen(false);
       setConfirmDialogConfig(null);
     }
-  };
-
-  const handleToggleAccountType = (account: Account) => {
-    const newIsShared = account.is_shared === 1 ? 0 : 1;
-    const typeText = newIsShared === 1 ? '共享' : '专属';
-    
-    showConfirmDialog({
-      title: `转换确认`,
-      description: newIsShared === 1
-        ? '转换为共享账号后，此账号将加入共享配额池供他人使用，你将获得两倍于当前账号配额的共享配额奖励。确实要继续吗？'
-        : '转换为专属账号后，此账号将仅供你个人使用，你的共享配额池可用配额将会相应减少。确实要继续吗？',
-      confirmText: '继续',
-      cancelText: '取消',
-      onConfirm: async () => {
-        try {
-          await updateAccountType(account.cookie_id, newIsShared);
-          setAccounts(accounts.map(a =>
-            a.cookie_id === account.cookie_id
-              ? { ...a, is_shared: newIsShared }
-              : a
-          ));
-          toasterRef.current?.show({
-            title: '类型已更新',
-            message: `账号已转换为${typeText}账号`,
-            variant: 'success',
-            position: 'top-right',
-          });
-        } catch (err) {
-          toasterRef.current?.show({
-            title: '转换失败',
-            message: err instanceof Error ? err.message : '转换账号类型失败',
-            variant: 'error',
-            position: 'top-right',
-          });
-        }
-      },
-    });
   };
 
   const handleDelete = (cookieId: string) => {
@@ -834,7 +796,6 @@ export default function AccountsPage() {
                         <TableRow>
                           <TableHead className="min-w-[200px]">账号 ID</TableHead>
                           <TableHead className="min-w-[120px]">账号名称</TableHead>
-                          <TableHead className="min-w-[80px]">类型</TableHead>
                           <TableHead className="min-w-[80px]">状态</TableHead>
                           <TableHead className="min-w-[100px]">添加时间</TableHead>
                           <TableHead className="min-w-[100px]">最后使用</TableHead>
@@ -876,11 +837,6 @@ export default function AccountsPage() {
                               </div>
                             </TableCell>
                             <TableCell>
-                              <Badge variant={account.is_shared === 1 ? 'default' : 'secondary'} className="whitespace-nowrap">
-                                {account.is_shared === 1 ? '共享' : '专属'}
-                              </Badge>
-                            </TableCell>
-                            <TableCell>
                               <Badge variant={account.status === 1 ? 'default' : 'outline'} className="whitespace-nowrap">
                                 {account.status === 1 ? '启用' : '禁用'}
                               </Badge>
@@ -913,10 +869,6 @@ export default function AccountsPage() {
                                   <DropdownMenuItem onClick={() => handleRenameAntigravity(account)}>
                                     <IconEdit className="size-4 mr-2" />
                                     重命名
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => handleToggleAccountType(account)}>
-                                    <IconArrowsExchange className="size-4 mr-2" />
-                                    转为{account.is_shared === 1 ? '专属' : '共享'}
                                   </DropdownMenuItem>
                                   <DropdownMenuItem onClick={() => handleToggleStatus(account)}>
                                     {account.status === 1 ? (
@@ -974,7 +926,6 @@ export default function AccountsPage() {
                         <TableHead className="min-w-[100px]">账号ID</TableHead>
                         <TableHead className="min-w-[150px]">账号名称</TableHead>
                         <TableHead className="min-w-[100px]">余额</TableHead>
-                        <TableHead className="min-w-[80px]">类型</TableHead>
                         <TableHead className="min-w-[80px]">状态</TableHead>
                         <TableHead className="min-w-[100px]">添加时间</TableHead>
                         <TableHead className="text-right min-w-[80px]">操作</TableHead>
@@ -989,19 +940,14 @@ export default function AccountsPage() {
                           <TableCell>
                             {account.account_name || account.email || '未命名'}
                           </TableCell>
-                          <TableCell className="font-mono text-sm">
+                          <TableCell className="font-mono text-sm">        
                             {kiroBalances[account.account_id] !== undefined
                               ? `$${kiroBalances[account.account_id].toFixed(2)}`
                               : '加载中...'}
                           </TableCell>
                           <TableCell>
-                            <Badge variant={account.is_shared === 1 ? 'default' : 'secondary'} className="whitespace-nowrap">
-                              {account.is_shared === 1 ? '共享' : '专属'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
                             <Badge variant={account.status === 1 ? 'default' : 'outline'} className="whitespace-nowrap">
-                              {account.status === 1 ? '启用' : '禁用'}
+                              {account.status === 1 ? '启用' : '禁用'}     
                             </Badge>
                           </TableCell>
                           <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
@@ -1079,7 +1025,6 @@ export default function AccountsPage() {
                         <TableHead className="min-w-[120px]">账号ID</TableHead>
                         <TableHead className="min-w-[160px]">账号名称</TableHead>
                         <TableHead className="min-w-[200px]">邮箱</TableHead>
-                        <TableHead className="min-w-[80px]">类型</TableHead>
                         <TableHead className="min-w-[80px]">状态</TableHead>
                         <TableHead className="min-w-[80px]">刷新</TableHead>
                         <TableHead className="min-w-[160px]">过期时间</TableHead>
@@ -1100,13 +1045,8 @@ export default function AccountsPage() {
                             {account.email || '-'}
                           </TableCell>
                           <TableCell>
-                            <Badge variant={account.is_shared === 1 ? 'default' : 'secondary'}>
-                              {account.is_shared === 1 ? '共享' : '专属'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
                             <Badge variant={account.status === 1 ? 'default' : 'secondary'}>
-                              {account.status === 1 ? '启用' : '禁用'}
+                              {account.status === 1 ? '启用' : '禁用'}     
                             </Badge>
                           </TableCell>
                           <TableCell>

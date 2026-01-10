@@ -366,7 +366,6 @@ export default function AnalyticsPage() {
                         <TableRow>
                           <TableHead className="min-w-[150px]">账号 ID</TableHead>
                           <TableHead className="min-w-[150px]">模型</TableHead>
-                          <TableHead className="min-w-[80px]">类型</TableHead>
                           <TableHead className="min-w-[100px]">消耗配额</TableHead>
                           <TableHead className="min-w-[150px]">时间</TableHead>
                         </TableRow>
@@ -382,11 +381,6 @@ export default function AnalyticsPage() {
                             <TableCell>
                               <Badge variant="outline" className="whitespace-nowrap">
                                 {getModelDisplayName(consumption.model_name)}
-                              </Badge>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={consumption.is_shared === 1 ? 'default' : 'secondary'} className="whitespace-nowrap">
-                                {consumption.is_shared === 1 ? '共享' : '专属'}
                               </Badge>
                             </TableCell>
                             <TableCell className="font-mono text-sm whitespace-nowrap">
@@ -470,7 +464,7 @@ export default function AnalyticsPage() {
               </CardHeader>
               <CardContent>
                 {kiroStats && kiroStats.total_credit !== undefined ? (
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <p className="text-sm text-muted-foreground">总请求数</p>
                       <p className="text-2xl font-bold">{kiroStats.total_requests || '0'}</p>
@@ -478,14 +472,6 @@ export default function AnalyticsPage() {
                     <div className="space-y-2">
                       <p className="text-sm text-muted-foreground">总消费额度</p>
                       <p className="text-2xl font-bold">${parseFloat(kiroStats.total_credit || '0').toFixed(4)}</p>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-sm text-muted-foreground">共享账号消费</p>
-                      <p className="text-2xl font-bold">${parseFloat(kiroStats.shared_credit || '0').toFixed(4)}</p>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-sm text-muted-foreground">专属账号消费</p>
-                      <p className="text-2xl font-bold">${parseFloat(kiroStats.private_credit || '0').toFixed(4)}</p>
                     </div>
                   </div>
                 ) : (
@@ -519,7 +505,6 @@ export default function AnalyticsPage() {
                             <TableHead className="min-w-[120px]">账号ID</TableHead>
                             <TableHead className="min-w-[150px]">账号名称</TableHead>
                             <TableHead className="min-w-[150px]">模型</TableHead>
-                            <TableHead className="min-w-[80px]">类型</TableHead>
                             <TableHead className="min-w-[100px]">消耗额度</TableHead>
                             <TableHead className="min-w-[150px]">时间</TableHead>
                           </TableRow>
@@ -536,11 +521,6 @@ export default function AnalyticsPage() {
                               <TableCell>
                                 <Badge variant="outline" className="whitespace-nowrap">
                                   {getModelDisplayName(log.model_id)}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant={log.is_shared === 1 ? 'default' : 'secondary'} className="whitespace-nowrap">
-                                  {log.is_shared === 1 ? '共享' : '专属'}
                                 </Badge>
                               </TableCell>
                               <TableCell className="font-mono text-sm whitespace-nowrap">
