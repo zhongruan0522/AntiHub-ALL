@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 import { getInternalApiBaseUrl } from './lib/apiBase';
+import { getCookieSecure } from './lib/cookie';
 
 const API_BASE_URL = getInternalApiBaseUrl();
 
@@ -53,7 +54,7 @@ export async function middleware(request: NextRequest) {
           
           response.cookies.set('access_token', newTokens.access_token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
+            secure: getCookieSecure(),
             sameSite: 'lax',
             maxAge: 60 * 60 * 24 * 7, // 7 天
             path: '/',
@@ -61,7 +62,7 @@ export async function middleware(request: NextRequest) {
 
           response.cookies.set('refresh_token', newTokens.refresh_token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
+            secure: getCookieSecure(),
             sameSite: 'lax',
             maxAge: 60 * 60 * 24 * 30, // 30 天
             path: '/',

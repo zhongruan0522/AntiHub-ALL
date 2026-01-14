@@ -5,6 +5,9 @@ services:
     container_name: antihub-web
     environment:
       NODE_ENV: production
+      # Cookie 协议（影响 Set-Cookie 的 Secure 属性）：默认 HTTPS；用 IP 直连（HTTP）时改成 HTTP
+      COOKIE_HTTP: ${COOKIE_HTTP:-HTTPS}
+      Cookie-Http: ${COOKIE_HTTP:-HTTPS}
       # 可选：覆盖 web 容器内部访问 backend 的地址（容器内通常用 http://antihub-backend:8000）
       INTERNAL_API_BASE_URL: ${INTERNAL_API_BASE_URL:-}
       BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-}

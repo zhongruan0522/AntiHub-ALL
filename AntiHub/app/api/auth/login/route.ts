@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getInternalApiBaseUrl } from '@/lib/apiBase';
+import { getCookieSecure } from '@/lib/cookie';
 
 /**
  * 用户名密码登录（服务端代理）
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
     if (access_token) {
       response.cookies.set('access_token', access_token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: getCookieSecure(),
         sameSite: 'lax',
         maxAge: 60 * 60 * 24 * 7, // 7 天
         path: '/',
@@ -47,7 +48,7 @@ export async function POST(request: NextRequest) {
     if (refresh_token) {
       response.cookies.set('refresh_token', refresh_token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: getCookieSecure(),
         sameSite: 'lax',
         maxAge: 60 * 60 * 24 * 30, // 30 天
         path: '/',
@@ -57,7 +58,7 @@ export async function POST(request: NextRequest) {
     if (user) {
       response.cookies.set('user', JSON.stringify(user), {
         httpOnly: false,
-        secure: process.env.NODE_ENV === 'production',
+        secure: getCookieSecure(),
         sameSite: 'lax',
         maxAge: 60 * 60 * 24 * 7,
         path: '/',
@@ -70,4 +71,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: '登录失败' }, { status: 500 });
   }
 }
-
