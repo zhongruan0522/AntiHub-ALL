@@ -9,7 +9,7 @@
 
 这个仓库把 `AntiHub`（前端）、`AntiHub-Backend`（后端）、`AntiHub-plugin`（插件服务）统一成一套 `docker compose` 部署。
 
-目标很简单：三者之间的内部地址/端口都已经预置好，你只需要配置外部依赖（现成的 PostgreSQL）和你自己的密钥。
+目标很简单：三者之间的内部地址/端口都已经预置好；默认 `docker-compose.yml` 自带 PostgreSQL + Redis，你主要只需要配置你自己的密钥；如果你想接入外部 PG/Redis，用 `docker-compose.core.yml`。
 
 另外：前端已内置 `/backend/* -> http://backend:8000/*` 转发，所以你不需要单独给 Nginx 配 `/backend/` 的反代规则（当然你想配也行）。
 
@@ -21,11 +21,10 @@
 4. Kiro-AWS IMA: 已完全支持
 5. QwenCli: 已完成开发，待测试
 
-
 ## 你需要准备
 
-- PostgreSQL：一套你现成的 PG（建议两个数据库：`antihub` 给后端用，`antigravity` 给插件用）
-- Redis：默认 compose 自带一个；如果你有现成 Redis，可在 `.env` 里覆盖相关变量
+- 必配：你自己的密钥（`JWT_SECRET_KEY`、`PLUGIN_ADMIN_API_KEY`、`PLUGIN_API_ENCRYPTION_KEY`）
+- 可选：外部 PostgreSQL / Redis（如果你不想用 compose 自带的）
 
 ## 快速开始
 
@@ -40,6 +39,8 @@ cp .env.example .env
 ```bash
 docker compose up -d
 ```
+
+> 只启动基础的三件套`docker compose -f docker-compose.core.yml up -d `
 
 **注意**：插件服务会在首次启动时自动检测并初始化数据库，无需手动导入 `schema.sql`。
 

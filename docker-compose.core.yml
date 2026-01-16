@@ -27,13 +27,11 @@ services:
       APP_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
-      # 外部依赖（由你自己提供/维护）
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-antihub}:${POSTGRES_PASSWORD:-please-change-me}@postgres:5432/${POSTGRES_DB:-antihub}}
+      # 外部依赖（你自己提供/维护）
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
 
-      # Redis：默认使用 compose 自带 redis；如你有现成的 Redis，可在 .env 里覆盖
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-
-      # 内部互联（已预置，不需要你再配“互相链接”的环境变量）
+      # 内部互联（已预置）
       PLUGIN_API_BASE_URL: http://antihub-plugin:8045
       PLUGIN_API_ADMIN_KEY: ${PLUGIN_ADMIN_API_KEY}
       PLUGIN_API_ENCRYPTION_KEY: ${PLUGIN_API_ENCRYPTION_KEY}
@@ -51,10 +49,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
       plugin:
         condition: service_started
     ports:
@@ -69,15 +63,14 @@ services:
       NODE_ENV: production
       PORT: 8045
 
-      # 外部依赖（由你自己提供/维护）
-      DB_HOST: ${PLUGIN_DB_HOST:-postgres}
+      # 外部依赖（你自己提供/维护）
+      DB_HOST: ${PLUGIN_DB_HOST}
       DB_PORT: ${PLUGIN_DB_PORT:-5432}
       DB_NAME: ${PLUGIN_DB_NAME:-antigravity}
-      DB_USER: ${PLUGIN_DB_USER:-antigravity}
-      DB_PASSWORD: ${PLUGIN_DB_PASSWORD:-please-change-me}
+      DB_USER: ${PLUGIN_DB_USER}
+      DB_PASSWORD: ${PLUGIN_DB_PASSWORD}
 
-      # Redis：默认使用 compose 自带 redis；如你有现成的 Redis，可在 .env 里覆盖
-      REDIS_HOST: ${PLUGIN_REDIS_HOST:-redis}
+      REDIS_HOST: ${PLUGIN_REDIS_HOST}
       REDIS_PORT: ${PLUGIN_REDIS_PORT:-6379}
       REDIS_PASSWORD: ${PLUGIN_REDIS_PASSWORD:-}
 
@@ -87,45 +80,5 @@ services:
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
     restart: unless-stopped
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: antihub-postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-antihub}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-please-change-me}
-      POSTGRES_DB: ${POSTGRES_DB:-antihub}
-
-      # 给 plugin 自动建库/建用户（仅首次初始化数据目录时生效）
-      PLUGIN_DB_NAME: ${PLUGIN_DB_NAME:-antigravity}
-      PLUGIN_DB_USER: ${PLUGIN_DB_USER:-antigravity}
-      PLUGIN_DB_PASSWORD: ${PLUGIN_DB_PASSWORD:-please-change-me}
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - antihub_postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-antihub} -d ${POSTGRES_DB:-antihub}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    container_name: antihub-redis
-    command: redis-server --appendonly yes
-    volumes:
-      - antihub_redis_data:/data
-    restart: unless-stopped
-
-volumes:
-  antihub_redis_data:
-  antihub_postgres_data:

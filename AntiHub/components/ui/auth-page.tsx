@@ -110,10 +110,7 @@ export function AuthPage() {
 					</p>
 				</div>
 				<form className="space-y-2" onSubmit={handlePasswordLogin}>
-						<p className="text-white/60 text-start text-xs">
-							使用账号密码登录
-						</p>
-						
+
 						{error && (
 							<div className="text-red-400 text-sm p-2 bg-red-500/10 border border-red-500/20 rounded">
 								{error}
