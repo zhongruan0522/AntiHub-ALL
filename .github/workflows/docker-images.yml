@@ -49,6 +49,8 @@ jobs:
             web:
               - 'AntiHub/**'
               - '!AntiHub/**/*.md'
+              - 'AntiHook/**'
+              - '!AntiHook/**/*.md'
             backend:
               - 'AntiHub-Backend/**'
               - '!AntiHub-Backend/**/*.md'
@@ -129,6 +131,8 @@ jobs:
         with:
           context: ./AntiHub
           file: ./AntiHub/Dockerfile
+          build-contexts: |
+            antihook=./AntiHook
           push: true
           platforms: ${{ matrix.platform }}
           tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/antihub-web:build-${{ github.run_id }}-${{ matrix.suffix }}

@@ -1,0 +1,15 @@
+# AntiHook 构建配置文件
+# 复制此文件为 .build.config 并修改配置
+
+# AntiHub 对外可访问的地址（Web 或 Backend 都行）
+# AntiHook 会在收到 kiro:// 回调后 POST: {KIRO_SERVER_URL}/api/kiro/oauth/callback
+#
+# 示例（本地）：
+# KIRO_SERVER_URL="http://127.0.0.1:3000"
+#
+# 示例（生产）：
+# KIRO_SERVER_URL="https://your-antihub.example.com"
+
+# 兼容旧变量名（不推荐继续使用）：
+# SERVER_URL="https://your-antihub.example.com"
+

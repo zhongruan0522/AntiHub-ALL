@@ -85,20 +85,25 @@ const processQueue = (error: Error | null, token: string | null = null) => {
  */
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const error: ApiError = await response.json().catch(() => ({
+    const errorBody: any = await response.json().catch(() => ({
       detail: `HTTP ${response.status}: ${response.statusText}`
     }));
     
     let errorMessage: string;
-    if (typeof error.detail === 'string') {
-      errorMessage = error.detail;
-    } else if (Array.isArray(error.detail)) {
-      errorMessage = error.detail.map(e => e.msg).join(', ');
-    } else if (error.detail && typeof error.detail === 'object') {
+    const detail = errorBody?.detail;
+    if (typeof detail === 'string') {
+      errorMessage = detail;
+    } else if (Array.isArray(detail)) {
+      errorMessage = detail.map((e) => e.msg).join(', ');
+    } else if (detail && typeof detail === 'object') {
       // 处理对象类型的 detail，例如 {error: "message"}
-      errorMessage = (error.detail as any).error || (error.detail as any).message || JSON.stringify(error.detail);
+      errorMessage = detail.error || detail.message || JSON.stringify(detail);
+    } else if (typeof errorBody?.error === 'string') {
+      errorMessage = errorBody.error;
+    } else if (typeof errorBody?.message === 'string') {
+      errorMessage = errorBody.message;
     } else {
-      errorMessage = JSON.stringify(error.detail);
+      errorMessage = `HTTP ${response.status}: ${response.statusText}`;
     }
     
     throw new Error(errorMessage);

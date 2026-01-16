@@ -1,0 +1,124 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  KIRO_SERVER_URL: ${{ secrets.KIRO_SERVER_URL || '' }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            output: antihook.exe
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            output: antihook-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            output: antihook-darwin-arm64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Get dependencies
+      run: go mod download
+
+    - name: Generate version
+      id: version
+      shell: bash
+      run: |
+        short_sha=$(echo "${{ github.sha }}" | cut -c1-7)
+        date=$(date -u +"%Y%m%d-%H%M%S")
+        version="dev-$date-$short_sha"
+        echo "VERSION=$version" >> $GITHUB_OUTPUT
+        echo "Generated version: $version"
+
+    - name: Build for ${{ matrix.goos }}-${{ matrix.goarch }}
+      shell: bash
+      run: |
+        LDFLAGS="-s -w"
+        LDFLAGS="$LDFLAGS -X 'main.DefaultServerURL=${{ secrets.KIRO_SERVER_URL || '' }}'"
+        LDFLAGS="$LDFLAGS -X 'main.BuildVersion=${{ steps.version.outputs.VERSION }}'"
+        LDFLAGS="$LDFLAGS -X 'main.BuildTime=$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
+
+        GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+          go build -v -ldflags="$LDFLAGS" -o ${{ matrix.output }} .
+
+        echo "Built: ${{ matrix.output }}"
+        ls -lh ${{ matrix.output }}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.output }}
+        path: ${{ matrix.output }}
+        retention-days: 7
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Generate version
+      id: version
+      run: |
+        short_sha=$(echo "${{ github.sha }}" | cut -c1-7)
+        date=$(date -u +"%Y%m%d-%H%M%S")
+        version="dev-$date-$short_sha"
+        echo "VERSION=$version" >> $GITHUB_OUTPUT
+        echo "Generated version: $version"
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -R artifacts
+
+    - name: Create and push tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag ${{ steps.version.outputs.VERSION }}
+        git push origin ${{ steps.version.outputs.VERSION }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.VERSION }}
+        name: Release ${{ steps.version.outputs.VERSION }}
+        files: artifacts/**/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

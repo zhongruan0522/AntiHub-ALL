@@ -1,0 +1,33 @@
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+*.test
+
+/bin/
+/dist/
+/build/
+
+# 构建产物
+antihook
+antihook-*
+*.app
+
+logs/
+*.log
+
+go.work
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+.DS_Store
+Thumbs.db
+
+# 构建配置（包含敏感信息）
+.build.config
