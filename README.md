@@ -77,4 +77,3 @@ docker compose run --rm backend python generate_encryption_key.py
 - [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) - 提供了AN渠道的429修复
 - [KiroGate](https://github.com/aliom-v/KiroGate) - Kiro渠道的Token导入、思考支持
 - [AIClient-2-API](https://github.com/justlovemaki/AIClient-2-API) - Kiro AWS IMA账户导入代码
-- [kiro.rs](https://github.com/hank9999/kiro.rs) - Kiro的内置工具的实现
