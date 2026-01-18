@@ -41,7 +41,8 @@ def get_codex_service(
 
 
 def _serialize_account(account) -> dict:
-    return CodexAccountResponse.model_validate(account).model_dump(by_alias=True)
+    # 前端使用 account_id 作为主键字段名（不是 id）
+    return CodexAccountResponse.model_validate(account).model_dump(by_alias=False)
 
 
 @router.get("/models", summary="获取 Codex 模型列表")
