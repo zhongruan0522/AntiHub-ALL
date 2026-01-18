@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.models.oauth_token import OAuthToken
     from app.models.plugin_api_key import PluginAPIKey
     from app.models.api_key import APIKey
+    from app.models.codex_account import CodexAccount
 
 
 class User(Base):
@@ -130,6 +131,12 @@ class User(Base):
         "APIKey",
         back_populates="user",
         cascade="all, delete-orphan"
+    )
+
+    codex_accounts: Mapped[list["CodexAccount"]] = relationship(
+        "CodexAccount",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )
     
     # 索引定义

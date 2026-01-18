@@ -28,7 +28,8 @@ from app.api.routes import (
     kiro_aws_idc_router,
     qwen_router,
     anthropic_router,
-    gemini_router
+    gemini_router,
+    codex_router,
 )
 
 # 配置日志
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
     app.include_router(kiro_router)  # Kiro账号管理API
     app.include_router(kiro_aws_idc_router)  # Kiro AWS IdC / Builder ID（独立入口）
     app.include_router(qwen_router)  # Qwen账号管理API
+    app.include_router(codex_router)  # Codex账号管理API（本地落库）
     app.include_router(v1_router)  # OpenAI兼容API，支持Antigravity和Kiro配置
     app.include_router(anthropic_router)  # Anthropic兼容API (/v1/messages)
     app.include_router(gemini_router)  # Gemini兼容API (/v1beta/models/{model}:generateContent)

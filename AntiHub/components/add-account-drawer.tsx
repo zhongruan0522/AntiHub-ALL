@@ -8,6 +8,9 @@ import {
   getOAuthAuthorizeUrl,
   pollKiroOAuthStatus,
   submitOAuthCallback,
+  getCodexOAuthAuthorizeUrl,
+  submitCodexOAuthCallback,
+  importCodexAccount,
   getQwenOAuthAuthorizeUrl,
   pollQwenOAuthStatus,
   importAccountByRefreshToken,
@@ -29,7 +32,7 @@ import {
   DrawerTitle,
 } from '@/components/ui/drawer';
 import { IconExternalLink, IconCopy, IconX } from '@tabler/icons-react';
-import { Qwen } from '@lobehub/icons';
+import { OpenAI, Qwen } from '@lobehub/icons';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import Toaster, { ToasterRef } from '@/components/ui/toast';
@@ -79,7 +82,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const [step, setStep] = useState<
     'platform' | 'kiro_provider' | 'method' | 'authorize'
   >('platform');
-  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | ''>('');
+  const [platform, setPlatform] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | ''>('');
   const [kiroProvider, setKiroProvider] = useState<'social' | 'aws_idc' | ''>('');
   const [loginMethod, setLoginMethod] = useState<'manual' | 'refresh_token' | ''>(''); // Antigravity 登录方式
   const [kiroLoginMethod, setKiroLoginMethod] = useState<'oauth' | 'refresh_token' | ''>('');
@@ -87,6 +90,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     'device_code' | 'manual_import' | ''
   >('');
   const [qwenLoginMethod, setQwenLoginMethod] = useState<'oauth' | 'json'>('oauth');
+  const [codexLoginMethod, setCodexLoginMethod] = useState<'oauth' | 'json'>('oauth');
   const [kiroImportRefreshToken, setKiroImportRefreshToken] = useState('');
   const [kiroImportClientId, setKiroImportClientId] = useState('');
   const [kiroImportClientSecret, setKiroImportClientSecret] = useState('');
@@ -94,6 +98,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const [antigravityImportRefreshToken, setAntigravityImportRefreshToken] = useState('');
   const [qwenCredentialJson, setQwenCredentialJson] = useState('');
   const [qwenAccountName, setQwenAccountName] = useState('');
+  const [codexCredentialJson, setCodexCredentialJson] = useState('');
+  const [codexAccountName, setCodexAccountName] = useState('');
   const [oauthUrl, setOauthUrl] = useState('');
   const [oauthState, setOauthState] = useState(''); // Kiro OAuth state
   const [callbackUrl, setCallbackUrl] = useState('');
@@ -272,6 +278,24 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         return;
       }
 
+      if (platform === 'codex') {
+        if (!codexLoginMethod) {
+          toasterRef.current?.show({
+            title: '选择方式',
+            message: '请选择添加方式',
+            variant: 'warning',
+            position: 'top-right',
+          });
+          return;
+        }
+
+        setOauthUrl('');
+        setOauthState('');
+        setCallbackUrl('');
+        setStep('authorize');
+        return;
+      }
+
       if (!loginMethod) {
         toasterRef.current?.show({
           title: '选择登录方式',
@@ -323,6 +347,9 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         if (platform === 'antigravity') {
           setLoginMethod('');
         }
+        if (platform === 'codex') {
+          setCodexLoginMethod('oauth');
+        }
       }
     } else if (step === 'authorize') {
       if (platform === 'kiro' || platform === 'qwen') {
@@ -341,6 +368,9 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       if (platform === 'qwen') {
         setStep('method');
         setQwenLoginMethod('oauth');
+      } else if (platform === 'codex') {
+        setStep('method');
+        setCodexLoginMethod('oauth');
       } else if (platform === 'antigravity') {
         setStep('method');
       } else {
@@ -352,6 +382,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
       setAntigravityImportRefreshToken('');
       setQwenCredentialJson('');
       setQwenAccountName('');
+      setCodexCredentialJson('');
+      setCodexAccountName('');
 
       setKiroAwsIdcStatus('idle');
       setKiroAwsIdcMessage('');
@@ -1039,6 +1071,109 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     onSuccess?.();
   };
 
+  const handleStartCodexOAuth = async () => {
+    try {
+      const accountName = codexAccountName.trim();
+      const result = await getCodexOAuthAuthorizeUrl({
+        is_shared: 0,
+        account_name: accountName || undefined,
+      });
+
+      setOauthUrl(result.auth_url);
+      setOauthState(result.state);
+      setCountdown(result.expires_in);
+      setCallbackUrl('');
+
+      window.open(result.auth_url, '_blank', 'width=600,height=700');
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '获取授权链接失败',
+        message: err instanceof Error ? err.message : '获取 Codex 授权链接失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
+  const handleSubmitCodexCallback = async () => {
+    const url = callbackUrl.trim();
+    if (!url) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '请粘贴 callback_url',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    try {
+      await submitCodexOAuthCallback(url);
+
+      toasterRef.current?.show({
+        title: '添加成功',
+        message: 'Codex 账号已添加',
+        variant: 'success',
+        position: 'top-right',
+      });
+
+      window.dispatchEvent(new CustomEvent('accountAdded'));
+      onOpenChange(false);
+      resetState();
+      onSuccess?.();
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '添加失败',
+        message: err instanceof Error ? err.message : '提交 Codex callback 失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
+  const handleImportCodexAccount = async () => {
+    const credentialJson = codexCredentialJson.replace(/^\uFEFF/, '').trim();
+    if (!credentialJson) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '请粘贴 Codex credential_json',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    try {
+      await importCodexAccount({
+        credential_json: credentialJson,
+        account_name: codexAccountName.trim() || undefined,
+        is_shared: 0,
+      });
+
+      toasterRef.current?.show({
+        title: '导入成功',
+        message: 'Codex 账号已添加',
+        variant: 'success',
+        position: 'top-right',
+      });
+
+      window.dispatchEvent(new CustomEvent('accountAdded'));
+      onOpenChange(false);
+      resetState();
+      onSuccess?.();
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '导入失败',
+        message: err instanceof Error ? err.message : '导入 Codex 账号失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      throw err;
+    }
+  };
+
   const handleStartQwenOAuth = async () => {
     try {
       const accountName = qwenAccountName.trim();
@@ -1193,6 +1328,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     setKiroLoginMethod('');
     setKiroAwsIdcMethod('');
     setQwenLoginMethod('oauth');
+    setCodexLoginMethod('oauth');
     setKiroImportRefreshToken('');
     setKiroImportClientId('');
     setKiroImportClientSecret('');
@@ -1203,6 +1339,8 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     setAntigravityImportRefreshToken('');
     setQwenCredentialJson('');
     setQwenAccountName('');
+    setCodexCredentialJson('');
+    setCodexAccountName('');
     setOauthUrl('');
     setOauthState('');
     setCallbackUrl('');
@@ -1373,6 +1511,34 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                     </p>
                   </div>
                 </label>
+
+                <label
+                  className={cn(
+                    "flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    platform === 'codex' ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="platform"
+                    value="codex"
+                    checked={platform === 'codex'}
+                    onChange={(e) => setPlatform(e.target.value as 'codex')}
+                    className="w-4 h-4"
+                  />
+                  <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
+                    <OpenAI className="size-6 text-foreground" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">Codex</h3>
+                      <Badge variant="secondary">可用</Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      OAuth 登录 / 凭证 JSON 导入
+                    </p>
+                  </div>
+                </label>
               </div>
             </div>
           )}
@@ -1445,6 +1611,62 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
           )}
 
           {/* 选择添加方式 (Qwen) */}
+          {step === 'method' && platform === 'codex' && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">选择添加方式</p>
+
+              <div className="space-y-3">
+                <label
+                  className={cn(
+                    "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    codexLoginMethod === 'oauth'
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="codexLoginMethod"
+                    value="oauth"
+                    checked={codexLoginMethod === 'oauth'}
+                    onChange={() => setCodexLoginMethod('oauth')}
+                    className="w-4 h-4 mt-1"
+                  />
+                  <div className="flex-1">
+                    <h3 className="font-semibold">OAuth 登录（推荐）</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      打开授权页面，然后粘贴 callback URL 完成落库
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  className={cn(
+                    "flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-colors",
+                    codexLoginMethod === 'json'
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="codexLoginMethod"
+                    value="json"
+                    checked={codexLoginMethod === 'json'}
+                    onChange={() => setCodexLoginMethod('json')}
+                    className="w-4 h-4 mt-1"
+                  />
+                  <div className="flex-1">
+                    <h3 className="font-semibold">凭证 JSON 导入</h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      适合你已经从 CLIProxyAPI / Codex CLI 导出了 codex-*.json
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+
           {step === 'method' && platform === 'qwen' && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
@@ -1610,7 +1832,122 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
           {/* 步骤 5: OAuth 授权 */}
           {step === 'authorize' && (
             <div className="space-y-6">
-              {platform === 'qwen' ? (
+              {platform === 'codex' ? (
+                <>
+                  <div className="space-y-3">
+                    <Label htmlFor="codex-account-name" className="text-base font-semibold">
+                      账号名称（可选）
+                    </Label>
+                    <Input
+                      id="codex-account-name"
+                      placeholder="给这个账号起个名字（可不填）"
+                      value={codexAccountName}
+                      onChange={(e) => setCodexAccountName(e.target.value)}
+                      className="h-12"
+                    />
+                  </div>
+
+                  {codexLoginMethod === 'json' ? (
+                    <>
+                      <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                        <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                          <strong>提示</strong>
+                          <br />
+                          凭证包含敏感 token，请只在可信环境中粘贴，并避免截图/外发。
+                        </p>
+                      </div>
+                      <div className="space-y-3">
+                        <Label htmlFor="codex-credential-json" className="text-base font-semibold">
+                          credential_json
+                        </Label>
+                        <Textarea
+                          id="codex-credential-json"
+                          placeholder="在此粘贴 CLIProxyAPI / Codex CLI 导出的 codex-*.json 内容"
+                          value={codexCredentialJson}
+                          onChange={(e) => setCodexCredentialJson(e.target.value)}
+                          className="font-mono text-sm min-h-[220px]"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="space-y-3">
+                        <Label className="text-base font-semibold">OAuth 授权</Label>
+                        <p className="text-sm text-muted-foreground">
+                          点击生成授权链接并打开。登录成功后会跳转到 <span className="font-mono">http://localhost:1455/auth/callback</span>；如果提示无法访问，直接复制地址栏里的 callback URL，粘贴到下方提交即可完成落库。
+                        </p>
+                      </div>
+
+                      <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                        <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                          <strong>提示</strong>
+                          <br />
+                          state 有效期约 10 分钟，过期请重新生成链接。
+                        </p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <Label className="text-base font-semibold">授权操作</Label>
+
+                        <div className="flex gap-2">
+                          <StatefulButton onClick={handleStartCodexOAuth} className="flex-1 cursor-pointer">
+                            {oauthUrl ? '重新生成并打开' : '生成并打开授权页面'}
+                          </StatefulButton>
+
+                          <Button
+                            onClick={handleOpenOAuthUrl}
+                            variant="outline"
+                            size="lg"
+                            disabled={!oauthUrl}
+                          >
+                            <IconExternalLink className="size-4 mr-2" />
+                            打开
+                          </Button>
+
+                          <Button
+                            onClick={() => {
+                              if (oauthUrl) {
+                                navigator.clipboard.writeText(oauthUrl);
+                                toasterRef.current?.show({
+                                  title: '复制成功',
+                                  message: '授权链接已复制到剪贴板',
+                                  variant: 'success',
+                                  position: 'top-right',
+                                });
+                              }
+                            }}
+                            variant="outline"
+                            size="lg"
+                            disabled={!oauthUrl}
+                          >
+                            <IconCopy className="size-4 mr-2" />
+                            复制
+                          </Button>
+                        </div>
+
+                        {oauthState && (
+                          <p className="text-xs text-muted-foreground">
+                            state：<span className="font-mono">{oauthState}</span>
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="space-y-3">
+                        <Label htmlFor="codex-callback-url" className="text-base font-semibold">
+                          callback_url
+                        </Label>
+                        <Input
+                          id="codex-callback-url"
+                          placeholder="粘贴 http://localhost:1455/auth/callback?code=...&state=..."
+                          value={callbackUrl}
+                          onChange={(e) => setCallbackUrl(e.target.value)}
+                          className="font-mono text-sm h-12"
+                        />
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : platform === 'qwen' ? (
                 <>
                   <div className="space-y-3">
                     <Label htmlFor="qwen-account-name" className="text-base font-semibold">
@@ -2360,7 +2697,25 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
           )}
 
           {step === 'authorize' ? (
-            platform === 'qwen' ? (
+            platform === 'codex' ? (
+              codexLoginMethod === 'json' ? (
+                <StatefulButton
+                  onClick={handleImportCodexAccount}
+                  disabled={!codexCredentialJson.trim()}
+                  className="flex-1 cursor-pointer"
+                >
+                  完成导入
+                </StatefulButton>
+              ) : (
+                <StatefulButton
+                  onClick={handleSubmitCodexCallback}
+                  disabled={!callbackUrl.trim()}
+                  className="flex-1 cursor-pointer"
+                >
+                  完成添加
+                </StatefulButton>
+              )
+            ) : platform === 'qwen' ? (
               qwenLoginMethod === 'json' ? (
                 <StatefulButton
                   onClick={handleImportQwenAccount}
@@ -2469,6 +2824,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
               onClick={handleContinue}
               disabled={
                 platform === 'antigravity' ? !loginMethod :
+                platform === 'codex' ? !codexLoginMethod :
                 platform === 'qwen' ? !qwenLoginMethod :
                 kiroProvider === 'social' ? !kiroLoginMethod :
                 kiroProvider === 'aws_idc' ? !kiroAwsIdcMethod :

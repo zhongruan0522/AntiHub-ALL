@@ -12,6 +12,7 @@ from app.api.routes.kiro_aws_idc import router as kiro_aws_idc_router
 from app.api.routes.qwen import router as qwen_router
 from app.api.routes.anthropic import router as anthropic_router
 from app.api.routes.gemini import router as gemini_router
+from app.api.routes.codex import router as codex_router
 
 __all__ = [
     "auth_router",
@@ -25,4 +26,5 @@ __all__ = [
     "qwen_router",
     "anthropic_router",
     "gemini_router",
+    "codex_router",
 ]

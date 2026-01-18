@@ -7,6 +7,7 @@ from app.models.oauth_token import OAuthToken
 from app.models.plugin_api_key import PluginAPIKey
 from app.models.api_key import APIKey
 from app.models.usage_log import UsageLog
+from app.models.codex_account import CodexAccount
 
 __all__ = [
     "User",
@@ -14,4 +15,5 @@ __all__ = [
     "PluginAPIKey",
     "APIKey",
     "UsageLog",
+    "CodexAccount",
 ]

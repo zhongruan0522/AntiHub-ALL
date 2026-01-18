@@ -24,11 +24,19 @@ import {
   deleteQwenAccount,
   updateQwenAccountStatus,
   updateQwenAccountName,
+  getCodexAccounts,
+  getCodexAccountCredentials,
+  deleteCodexAccount,
+  updateCodexAccountStatus,
+  updateCodexAccountName,
+  updateCodexAccountQuota,
+  updateCodexAccountLimits,
   type Account,
   type AccountProjects,
   type AntigravityAccountDetail,
   type KiroAccount,
-  type QwenAccount
+  type QwenAccount,
+  type CodexAccount
 } from '@/lib/api';
 import { AddAccountDrawer } from '@/components/add-account-drawer';
 import { Button } from '@/components/ui/button';
@@ -86,10 +94,11 @@ export default function AccountsPage() {
   const [kiroAccounts, setKiroAccounts] = useState<KiroAccount[]>([]);
   const [kiroBalances, setKiroBalances] = useState<Record<string, number>>({});
   const [qwenAccounts, setQwenAccounts] = useState<QwenAccount[]>([]);
+  const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingCookieId, setRefreshingCookieId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen'>('antigravity');
+  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex'>('antigravity');
 
   // 添加账号 Drawer 状态
   const [isAddDrawerOpen, setIsAddDrawerOpen] = useState(false);
@@ -127,6 +136,28 @@ export default function AccountsPage() {
   const [newQwenAccountName, setNewQwenAccountName] = useState('');
   const [isRenamingQwen, setIsRenamingQwen] = useState(false);
 
+  // 重命名 Codex 账号 Dialog 状态
+  const [isCodexRenameDialogOpen, setIsCodexRenameDialogOpen] = useState(false);
+  const [renamingCodexAccount, setRenamingCodexAccount] = useState<CodexAccount | null>(null);
+  const [newCodexAccountName, setNewCodexAccountName] = useState('');
+  const [isRenamingCodex, setIsRenamingCodex] = useState(false);
+
+  // Codex 额度设置 Dialog 状态
+  const [isCodexQuotaDialogOpen, setIsCodexQuotaDialogOpen] = useState(false);
+  const [quotaEditingCodexAccount, setQuotaEditingCodexAccount] = useState<CodexAccount | null>(null);
+  const [codexQuotaRemainingInput, setCodexQuotaRemainingInput] = useState('');
+  const [codexQuotaCurrencyInput, setCodexQuotaCurrencyInput] = useState('');
+  const [isUpdatingCodexQuota, setIsUpdatingCodexQuota] = useState(false);
+
+  // Codex 限额设置 Dialog 状态（5小时/周限）
+  const [isCodexLimitsDialogOpen, setIsCodexLimitsDialogOpen] = useState(false);
+  const [limitsEditingCodexAccount, setLimitsEditingCodexAccount] = useState<CodexAccount | null>(null);
+  const [codexLimit5hUsedInput, setCodexLimit5hUsedInput] = useState('');
+  const [codexLimit5hResetAtInput, setCodexLimit5hResetAtInput] = useState('');
+  const [codexLimitWeekUsedInput, setCodexLimitWeekUsedInput] = useState('');
+  const [codexLimitWeekResetAtInput, setCodexLimitWeekResetAtInput] = useState('');
+  const [isUpdatingCodexLimits, setIsUpdatingCodexLimits] = useState(false);
+
   // Antigravity 账号详情 Dialog 状态
   const [isAntigravityDetailDialogOpen, setIsAntigravityDetailDialogOpen] = useState(false);
   const [antigravityDetail, setAntigravityDetail] = useState<AntigravityAccountDetail | null>(null);
@@ -137,6 +168,10 @@ export default function AccountsPage() {
   const [detailAccount, setDetailAccount] = useState<KiroAccount | null>(null);
   const [detailBalance, setDetailBalance] = useState<any>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+
+  // Codex 账号详情 Dialog 状态
+  const [isCodexDetailDialogOpen, setIsCodexDetailDialogOpen] = useState(false);
+  const [detailCodexAccount, setDetailCodexAccount] = useState<CodexAccount | null>(null);
 
   // 确认对话框状态
   const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
@@ -195,6 +230,15 @@ export default function AccountsPage() {
         console.log('未加载Qwen账号');
         setQwenAccounts([]);
       }
+
+      // 加载 Codex 账号
+      try {
+        const codexData = await getCodexAccounts();
+        setCodexAccounts(codexData);
+      } catch (err) {
+        console.log('未加载Codex账号');
+        setCodexAccounts([]);
+      }
     } catch (err) {
       toasterRef.current?.show({
         title: '加载失败',
@@ -205,6 +249,7 @@ export default function AccountsPage() {
       setAccounts([]);
       setKiroAccounts([]);
       setQwenAccounts([]);
+      setCodexAccounts([]);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -426,6 +471,20 @@ export default function AccountsPage() {
     }
   };
 
+  const handleCopyCodexCredentials = async (account: CodexAccount) => {
+    try {
+      const data = await getCodexAccountCredentials(account.account_id);
+      await handleCopyJson(data);
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '复制失败',
+        message: err instanceof Error ? err.message : '复制凭证失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    }
+  };
+
   const showConfirmDialog = (config: {
     title: string;
     description: string;
@@ -537,6 +596,35 @@ export default function AccountsPage() {
     });
   };
 
+  const handleDeleteCodex = (accountId: number) => {
+    showConfirmDialog({
+      title: '删除账号',
+      description: '确定要删除这个 Codex 账号吗？此操作无法撤销。',
+      confirmText: '删除',
+      cancelText: '取消',
+      variant: 'destructive',
+      onConfirm: async () => {
+        try {
+          await deleteCodexAccount(accountId);
+          setCodexAccounts(codexAccounts.filter((a) => a.account_id !== accountId));
+          toasterRef.current?.show({
+            title: '删除成功',
+            message: 'Codex账号已删除',
+            variant: 'success',
+            position: 'top-right',
+          });
+        } catch (err) {
+          toasterRef.current?.show({
+            title: '删除失败',
+            message: err instanceof Error ? err.message : '删除失败',
+            variant: 'error',
+            position: 'top-right',
+          });
+        }
+      },
+    });
+  };
+
   const handleToggleKiroStatus = async (account: KiroAccount) => {
     try {
       const newStatus = account.status === 1 ? 0 : 1;
@@ -587,6 +675,39 @@ export default function AccountsPage() {
     }
   };
 
+  const handleToggleCodexStatus = async (account: CodexAccount) => {
+    try {
+      const newStatus = account.status === 1 ? 0 : 1;
+      if (newStatus === 1 && account.is_frozen) {
+        const untilText = account.frozen_until ? new Date(account.frozen_until).toLocaleString('zh-CN') : '未知';
+        toasterRef.current?.show({
+          title: '无法启用',
+          message: `账号冻结中，解冻时间：${untilText}`,
+          variant: 'warning',
+          position: 'top-right',
+        });
+        return;
+      }
+      const updated = await updateCodexAccountStatus(account.account_id, newStatus);
+      setCodexAccounts(
+        codexAccounts.map((a) => (a.account_id === account.account_id ? { ...a, ...updated } : a))
+      );
+      toasterRef.current?.show({
+        title: '状态已更新',
+        message: `账号已${newStatus === 1 ? '启用' : '禁用'}`,
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新状态失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    }
+  };
+
   const handleRenameKiro = (account: KiroAccount) => {
     setRenamingAccount(account);
     setNewAccountName(account.account_name || account.email || '');
@@ -597,6 +718,12 @@ export default function AccountsPage() {
     setRenamingQwenAccount(account);
     setNewQwenAccountName(account.account_name || account.email || '');
     setIsQwenRenameDialogOpen(true);
+  };
+
+  const handleRenameCodex = (account: CodexAccount) => {
+    setRenamingCodexAccount(account);
+    setNewCodexAccountName(account.account_name || account.email || '');
+    setIsCodexRenameDialogOpen(true);
   };
 
   const handleRenameAntigravity = (account: Account) => {
@@ -685,6 +812,49 @@ export default function AccountsPage() {
     }
   };
 
+  const handleSubmitCodexRename = async () => {
+    if (!renamingCodexAccount) return;
+
+    if (!newCodexAccountName.trim()) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '账号名称不能为空',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    setIsRenamingCodex(true);
+    try {
+      const updated = await updateCodexAccountName(
+        renamingCodexAccount.account_id,
+        newCodexAccountName.trim()
+      );
+      setCodexAccounts(
+        codexAccounts.map((a) =>
+          a.account_id === renamingCodexAccount.account_id ? { ...a, ...updated } : a
+        )
+      );
+      setIsCodexRenameDialogOpen(false);
+      toasterRef.current?.show({
+        title: '重命名成功',
+        message: '账号名称已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '重命名失败',
+        message: err instanceof Error ? err.message : '更新账号名称失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsRenamingCodex(false);
+    }
+  };
+
   const handleSubmitRename = async () => {
     if (!renamingAccount) return;
 
@@ -723,6 +893,215 @@ export default function AccountsPage() {
     } finally {
       setIsRenaming(false);
     }
+  };
+
+  const handleEditCodexQuota = (account: CodexAccount) => {
+    setQuotaEditingCodexAccount(account);
+    setCodexQuotaRemainingInput(
+      account.quota_remaining === null || account.quota_remaining === undefined
+        ? ''
+        : String(account.quota_remaining)
+    );
+    setCodexQuotaCurrencyInput(account.quota_currency || '');
+    setIsCodexQuotaDialogOpen(true);
+  };
+
+  const handleSubmitCodexQuota = async () => {
+    if (!quotaEditingCodexAccount) return;
+
+    const remainingRaw = codexQuotaRemainingInput.trim();
+    const currencyRaw = codexQuotaCurrencyInput.trim();
+
+    let quotaRemaining: number | null | undefined = null;
+    if (remainingRaw !== '') {
+      const parsed = Number(remainingRaw);
+      if (!Number.isFinite(parsed)) {
+        toasterRef.current?.show({
+          title: '输入错误',
+          message: '剩余额度必须是数字',
+          variant: 'warning',
+          position: 'top-right',
+        });
+        return;
+      }
+      quotaRemaining = parsed;
+    }
+
+    const quotaCurrency = currencyRaw ? currencyRaw : null;
+
+    setIsUpdatingCodexQuota(true);
+    try {
+      const updated = await updateCodexAccountQuota(quotaEditingCodexAccount.account_id, {
+        quota_remaining: quotaRemaining,
+        quota_currency: quotaCurrency,
+      });
+      setCodexAccounts(
+        codexAccounts.map((a) =>
+          a.account_id === quotaEditingCodexAccount.account_id ? { ...a, ...updated } : a
+        )
+      );
+      setIsCodexQuotaDialogOpen(false);
+      toasterRef.current?.show({
+        title: '更新成功',
+        message: '额度信息已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新额度失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsUpdatingCodexQuota(false);
+    }
+  };
+
+  const formatDateTimeLocalValue = (iso?: string | null) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    const mm = pad(d.getMonth() + 1);
+    const dd = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const min = pad(d.getMinutes());
+    return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+  };
+
+  const handleEditCodexLimits = (account: CodexAccount) => {
+    setLimitsEditingCodexAccount(account);
+    setCodexLimit5hUsedInput(
+      account.limit_5h_used_percent === null || account.limit_5h_used_percent === undefined
+        ? ''
+        : String(account.limit_5h_used_percent)
+    );
+    setCodexLimit5hResetAtInput(formatDateTimeLocalValue(account.limit_5h_reset_at));
+    setCodexLimitWeekUsedInput(
+      account.limit_week_used_percent === null || account.limit_week_used_percent === undefined
+        ? ''
+        : String(account.limit_week_used_percent)
+    );
+    setCodexLimitWeekResetAtInput(formatDateTimeLocalValue(account.limit_week_reset_at));
+    setIsCodexLimitsDialogOpen(true);
+  };
+
+  const handleSubmitCodexLimits = async () => {
+    if (!limitsEditingCodexAccount) return;
+
+    const p5Raw = codexLimit5hUsedInput.trim();
+    const pwRaw = codexLimitWeekUsedInput.trim();
+    const r5Raw = codexLimit5hResetAtInput.trim();
+    const rwRaw = codexLimitWeekResetAtInput.trim();
+
+    const parsePercent = (raw: string, label: string): number | null => {
+      if (!raw) return null;
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+        throw new Error(`${label}必须是整数`);
+      }
+      if (parsed < 0 || parsed > 100) {
+        throw new Error(`${label}必须在 0-100 之间`);
+      }
+      return parsed;
+    };
+
+    let p5: number | null = null;
+    let pw: number | null = null;
+    try {
+      p5 = parsePercent(p5Raw, '5小时限额已用%');
+      pw = parsePercent(pwRaw, '周限额已用%');
+    } catch (e) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: e instanceof Error ? e.message : '限额输入有误',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    const toIso = (raw: string): string | null => {
+      if (!raw) return null;
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) {
+        throw new Error('重置时间格式不正确');
+      }
+      return d.toISOString();
+    };
+
+    let r5: string | null = null;
+    let rw: string | null = null;
+    try {
+      r5 = toIso(r5Raw);
+      rw = toIso(rwRaw);
+    } catch (e) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: e instanceof Error ? e.message : '重置时间输入有误',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    if (p5 !== null && p5 >= 100 && !r5) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '5小时已用=100 时必须填写 5小时重置时间',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+    if (pw !== null && pw >= 100 && !rw) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '周限额已用=100 时必须填写 周限额重置时间',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    setIsUpdatingCodexLimits(true);
+    try {
+      const updated = await updateCodexAccountLimits(limitsEditingCodexAccount.account_id, {
+        limit_5h_used_percent: p5,
+        limit_5h_reset_at: r5,
+        limit_week_used_percent: pw,
+        limit_week_reset_at: rw,
+      });
+      setCodexAccounts(
+        codexAccounts.map((a) =>
+          a.account_id === limitsEditingCodexAccount.account_id ? { ...a, ...updated } : a
+        )
+      );
+      setIsCodexLimitsDialogOpen(false);
+      toasterRef.current?.show({
+        title: '更新成功',
+        message: '限额信息已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '更新失败',
+        message: err instanceof Error ? err.message : '更新限额失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsUpdatingCodexLimits(false);
+    }
+  };
+
+  const handleViewCodexDetail = (account: CodexAccount) => {
+    setDetailCodexAccount(account);
+    setIsCodexDetailDialogOpen(true);
   };
 
   const handleViewKiroDetail = async (account: KiroAccount) => {
@@ -901,7 +1280,7 @@ export default function AccountsPage() {
             <div></div>
             <div className="flex flex-wrap items-center gap-2">
               {/* 账号配置切换下拉菜单 */}
-              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen') => setActiveTab(value)}>
+              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex') => setActiveTab(value)}>
                 <SelectTrigger className="w-[140px] sm:w-[160px] h-9">
                   <SelectValue>
                     {activeTab === 'antigravity' ? (
@@ -915,10 +1294,15 @@ export default function AccountsPage() {
                         <img src="/kiro.png" alt="" className="size-4 rounded" />
                         Kiro
                       </span>
-                    ) : (
+                    ) : activeTab === 'qwen' ? (
                       <span className="flex items-center gap-2">
                         <Qwen className="size-4" />
                         Qwen
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-2">
+                        <OpenAI className="size-4" />
+                        Codex
                       </span>
                     )}
                   </SelectValue>
@@ -940,6 +1324,12 @@ export default function AccountsPage() {
                     <span className="flex items-center gap-2">
                       <Qwen className="size-4" />
                       Qwen
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="codex">
+                    <span className="flex items-center gap-2">
+                      <OpenAI className="size-4" />
+                      Codex
                     </span>
                   </SelectItem>
                 </SelectContent>
@@ -1328,6 +1718,154 @@ export default function AccountsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Codex账号列表 */}
+        {activeTab === 'codex' && (
+          <Card>
+            <CardHeader className="text-left">
+              <CardTitle className="text-left">Codex账号</CardTitle>
+              <CardDescription className="text-left">
+                共 {codexAccounts.length} 个账号
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {codexAccounts.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <p className="text-lg mb-2">暂无Codex账号</p>
+                  <p className="text-sm">点击“添加账号”按钮添加您的第一个Codex账号</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="min-w-[100px]">账号ID</TableHead>
+                        <TableHead className="min-w-[160px]">账号名称</TableHead>
+                        <TableHead className="min-w-[220px]">邮箱</TableHead>
+                        <TableHead className="min-w-[120px]">订阅</TableHead>
+                        <TableHead className="min-w-[80px]">状态</TableHead>
+                        <TableHead className="min-w-[120px]">5小时/周限</TableHead>
+                        <TableHead className="min-w-[180px]">解冻时间</TableHead>
+                        <TableHead className="min-w-[180px]">Token过期</TableHead>
+                        <TableHead className="min-w-[140px]">剩余额度</TableHead>
+                        <TableHead className="min-w-[180px]">额度更新时间</TableHead>
+                        <TableHead className="min-w-[180px]">添加时间</TableHead>
+                        <TableHead className="text-right min-w-[80px]">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {codexAccounts.map((account) => (
+                        <TableRow key={account.account_id}>
+                          <TableCell className="font-mono text-sm">
+                            {account.account_id}
+                          </TableCell>
+                          <TableCell>
+                            {account.account_name || account.email || '未命名'}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {account.email || '-'}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">
+                              {account.chatgpt_plan_type || '-'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={(account.effective_status ?? account.status) === 1 ? 'default' : 'secondary'}
+                              className={account.is_frozen ? 'text-red-600' : ''}
+                            >
+                              {account.is_frozen ? '冻结' : account.status === 1 ? '启用' : '禁用'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="font-mono text-sm whitespace-nowrap">
+                            {`${account.limit_5h_used_percent === null || account.limit_5h_used_percent === undefined ? '-' : account.limit_5h_used_percent
+                              }/${account.limit_week_used_percent === null || account.limit_week_used_percent === undefined ? '-' : account.limit_week_used_percent
+                              }`}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {account.is_frozen
+                              ? (account.frozen_until ? new Date(account.frozen_until).toLocaleString('zh-CN') : '未知')
+                              : '-'}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {account.token_expires_at
+                              ? new Date(account.token_expires_at).toLocaleString('zh-CN')
+                              : '-'}
+                          </TableCell>
+                          <TableCell className="font-mono text-sm whitespace-nowrap">
+                            {account.quota_remaining === null || account.quota_remaining === undefined
+                              ? '-'
+                              : `${Number(account.quota_remaining).toFixed(2)}${account.quota_currency ? ` ${account.quota_currency}` : ''}`}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {account.quota_updated_at
+                              ? new Date(account.quota_updated_at).toLocaleString('zh-CN')
+                              : '-'}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {account.created_at ? new Date(account.created_at).toLocaleString('zh-CN') : '-'}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon">
+                                  <IconDotsVertical className="size-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleViewCodexDetail(account)}>
+                                  <IconExternalLink className="size-4 mr-2" />
+                                  详细信息
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleEditCodexQuota(account)}>
+                                  <IconChartBar className="size-4 mr-2" />
+                                  设置额度
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleEditCodexLimits(account)}>
+                                  <IconAlertTriangle className="size-4 mr-2" />
+                                  设置限额
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleCopyCodexCredentials(account)}>
+                                  <IconCopy className="size-4 mr-2" />
+                                  复制凭证为JSON
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleRenameCodex(account)}>
+                                  <IconEdit className="size-4 mr-2" />
+                                  重命名
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleToggleCodexStatus(account)}>
+                                  {account.status === 1 ? (
+                                    <>
+                                      <IconToggleLeft className="size-4 mr-2" />
+                                      禁用
+                                    </>
+                                  ) : (
+                                    <>
+                                      <IconToggleRight className="size-4 mr-2" />
+                                      启用
+                                    </>
+                                  )}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => handleDeleteCodex(account.account_id)}
+                                  className="text-red-600"
+                                >
+                                  <IconTrash className="size-4 mr-2" />
+                                  删除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* 添加账号 Drawer */}
@@ -1507,6 +2045,239 @@ export default function AccountsPage() {
               disabled={isRenamingQwen || !newQwenAccountName.trim()}
             >
               {isRenamingQwen ? (
+                <>
+                  <MorphingSquare className="size-4 mr-2" />
+                  保存中...
+                </>
+              ) : (
+                '保存'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 重命名 Codex 账号 Dialog */}
+      <Dialog open={isCodexRenameDialogOpen} onOpenChange={setIsCodexRenameDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>重命名账号</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="codex-account-name">新的账号名称</Label>
+              <Input
+                id="codex-account-name"
+                placeholder="输入账号名称"
+                value={newCodexAccountName}
+                onChange={(e) => setNewCodexAccountName(e.target.value)}
+                maxLength={50}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !isRenamingCodex) {
+                    handleSubmitCodexRename();
+                  }
+                }}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsCodexRenameDialogOpen(false)}
+              disabled={isRenamingCodex}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={handleSubmitCodexRename}
+              disabled={isRenamingCodex || !newCodexAccountName.trim()}
+            >
+              {isRenamingCodex ? (
+                <>
+                  <MorphingSquare className="size-4 mr-2" />
+                  保存中...
+                </>
+              ) : (
+                '保存'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Codex 额度设置 Dialog */}
+      <Dialog
+        open={isCodexQuotaDialogOpen}
+        onOpenChange={(open) => {
+          setIsCodexQuotaDialogOpen(open);
+          if (!open) {
+            setQuotaEditingCodexAccount(null);
+            setCodexQuotaRemainingInput('');
+            setCodexQuotaCurrencyInput('');
+            setIsUpdatingCodexQuota(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>设置剩余额度</DialogTitle>
+            <DialogDescription className="break-all">
+              {quotaEditingCodexAccount
+                ? `账号ID: ${quotaEditingCodexAccount.account_id}`
+                : '请选择要设置额度的账号'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="codex-quota-remaining">剩余额度</Label>
+              <Input
+                id="codex-quota-remaining"
+                placeholder="例如 50"
+                value={codexQuotaRemainingInput}
+                onChange={(e) => setCodexQuotaRemainingInput(e.target.value)}
+                disabled={isUpdatingCodexQuota}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="codex-quota-currency">币种/单位</Label>
+              <Input
+                id="codex-quota-currency"
+                placeholder="例如 USD"
+                value={codexQuotaCurrencyInput}
+                onChange={(e) => setCodexQuotaCurrencyInput(e.target.value)}
+                maxLength={16}
+                disabled={isUpdatingCodexQuota}
+              />
+              <p className="text-xs text-muted-foreground">
+                备注：这里是手动维护字段，仅用于展示与本地落库。
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsCodexQuotaDialogOpen(false)}
+              disabled={isUpdatingCodexQuota}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={handleSubmitCodexQuota}
+              disabled={isUpdatingCodexQuota || !quotaEditingCodexAccount}
+            >
+              {isUpdatingCodexQuota ? (
+                <>
+                  <MorphingSquare className="size-4 mr-2" />
+                  保存中...
+                </>
+              ) : (
+                '保存'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Codex 限额设置 Dialog */}
+      <Dialog
+        open={isCodexLimitsDialogOpen}
+        onOpenChange={(open) => {
+          setIsCodexLimitsDialogOpen(open);
+          if (!open) {
+            setLimitsEditingCodexAccount(null);
+            setCodexLimit5hUsedInput('');
+            setCodexLimit5hResetAtInput('');
+            setCodexLimitWeekUsedInput('');
+            setCodexLimitWeekResetAtInput('');
+            setIsUpdatingCodexLimits(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>设置限额</DialogTitle>
+            <DialogDescription className="break-all">
+              {limitsEditingCodexAccount
+                ? `账号ID: ${limitsEditingCodexAccount.account_id}`
+                : '请选择要设置限额的账号'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="codex-limit-5h-used">5小时已用%</Label>
+                <Input
+                  id="codex-limit-5h-used"
+                  type="number"
+                  min={0}
+                  max={100}
+                  placeholder="例如 10"
+                  value={codexLimit5hUsedInput}
+                  onChange={(e) => setCodexLimit5hUsedInput(e.target.value)}
+                  disabled={isUpdatingCodexLimits}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="codex-limit-5h-reset">5小时重置时间</Label>
+                <Input
+                  id="codex-limit-5h-reset"
+                  type="datetime-local"
+                  value={codexLimit5hResetAtInput}
+                  onChange={(e) => setCodexLimit5hResetAtInput(e.target.value)}
+                  disabled={isUpdatingCodexLimits}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="codex-limit-week-used">周限额已用%</Label>
+                <Input
+                  id="codex-limit-week-used"
+                  type="number"
+                  min={0}
+                  max={100}
+                  placeholder="例如 10"
+                  value={codexLimitWeekUsedInput}
+                  onChange={(e) => setCodexLimitWeekUsedInput(e.target.value)}
+                  disabled={isUpdatingCodexLimits}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="codex-limit-week-reset">周限额重置时间</Label>
+                <Input
+                  id="codex-limit-week-reset"
+                  type="datetime-local"
+                  value={codexLimitWeekResetAtInput}
+                  onChange={(e) => setCodexLimitWeekResetAtInput(e.target.value)}
+                  disabled={isUpdatingCodexLimits}
+                />
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              冻结规则：周限额打满优先（冻结到周重置时间）；否则 5小时打满（冻结到 5小时重置时间）。
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsCodexLimitsDialogOpen(false)}
+              disabled={isUpdatingCodexLimits}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={handleSubmitCodexLimits}
+              disabled={isUpdatingCodexLimits || !limitsEditingCodexAccount}
+            >
+              {isUpdatingCodexLimits ? (
                 <>
                   <MorphingSquare className="size-4 mr-2" />
                   保存中...
@@ -1738,6 +2509,136 @@ export default function AccountsPage() {
 
           <ResponsiveDialogFooter className="shrink-0 px-4 pb-4 pt-2 border-t">
             <Button variant="outline" onClick={() => setIsAntigravityDetailDialogOpen(false)}>
+              关闭
+            </Button>
+          </ResponsiveDialogFooter>
+      </ResponsiveDialogContent>
+      </ResponsiveDialog>
+
+      {/* Codex 账号详情 - 响应式弹窗 */}
+      <ResponsiveDialog
+        open={isCodexDetailDialogOpen}
+        onOpenChange={(open) => {
+          setIsCodexDetailDialogOpen(open);
+          if (!open) setDetailCodexAccount(null);
+        }}
+        dismissible={false}
+      >
+        <ResponsiveDialogContent className="sm:max-w-[640px] max-h-[90vh] flex flex-col p-0" showHandle={false}>
+          <ResponsiveDialogHeader className="shrink-0 px-4 pt-4 pb-2 border-b">
+            <ResponsiveDialogTitle>账号详细信息</ResponsiveDialogTitle>
+            <ResponsiveDialogDescription className="break-all">
+              {detailCodexAccount ? `账号ID: ${detailCodexAccount.account_id}` : ''}
+            </ResponsiveDialogDescription>
+          </ResponsiveDialogHeader>
+
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            {detailCodexAccount ? (
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">基本信息</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">账号名称</Label>
+                      <p className="text-sm break-all">{detailCodexAccount.account_name || '未命名'}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">状态</Label>
+                      <Badge variant={detailCodexAccount.status === 1 ? 'default' : 'secondary'}>
+                        {detailCodexAccount.status === 1 ? '启用' : '禁用'}
+                      </Badge>
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <Label className="text-xs text-muted-foreground">邮箱</Label>
+                      <p className="text-sm break-all">{detailCodexAccount.email || '未提供邮箱'}</p>
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <Label className="text-xs text-muted-foreground">OpenAI account_id</Label>
+                      <p className="text-sm font-mono break-all">{detailCodexAccount.openai_account_id || '-'}</p>
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <Label className="text-xs text-muted-foreground">订阅类型</Label>
+                      <Badge variant="secondary">{detailCodexAccount.chatgpt_plan_type || '-'}</Badge>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">Token 信息</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">最后刷新</Label>
+                      <p className="text-sm">
+                        {detailCodexAccount.last_refresh_at
+                          ? new Date(detailCodexAccount.last_refresh_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">过期时间</Label>
+                      <p className="text-sm">
+                        {detailCodexAccount.token_expires_at
+                          ? new Date(detailCodexAccount.token_expires_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">额度信息</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">剩余额度</Label>
+                      <p className="text-sm font-mono">
+                        {detailCodexAccount.quota_remaining === null ||
+                        detailCodexAccount.quota_remaining === undefined
+                          ? '-'
+                          : `${Number(detailCodexAccount.quota_remaining).toFixed(2)}${detailCodexAccount.quota_currency ? ` ${detailCodexAccount.quota_currency}` : ''}`}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">更新时间</Label>
+                      <p className="text-sm">
+                        {detailCodexAccount.quota_updated_at
+                          ? new Date(detailCodexAccount.quota_updated_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground">时间</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">创建时间</Label>
+                      <p className="text-sm">
+                        {detailCodexAccount.created_at
+                          ? new Date(detailCodexAccount.created_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">更新时间</Label>
+                      <p className="text-sm">
+                        {detailCodexAccount.updated_at
+                          ? new Date(detailCodexAccount.updated_at).toLocaleString('zh-CN')
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-12 text-muted-foreground">
+                <p className="text-sm">暂无账号详情</p>
+              </div>
+            )}
+          </div>
+
+          <ResponsiveDialogFooter className="shrink-0 px-4 pb-4 pt-2 border-t">
+            <Button variant="outline" onClick={() => setIsCodexDetailDialogOpen(false)}>
               关闭
             </Button>
           </ResponsiveDialogFooter>
