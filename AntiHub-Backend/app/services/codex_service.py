@@ -824,10 +824,12 @@ class CodexService:
 
         account_name = (session.get("account_name") or "").strip()
         if not account_name:
-            account_name = profile.get("email") or "Codex Account"
+            account_name = profile.get("openai_account_id") or profile.get("email") or "Codex Account"
 
         existing = None
-        if profile.get("email"):
+        if profile.get("openai_account_id"):
+            existing = await self.repo.get_by_user_id_and_openai_account_id(user_id, profile["openai_account_id"])
+        elif profile.get("email"):
             existing = await self.repo.get_by_user_id_and_email(user_id, profile["email"])
 
         if existing:
@@ -919,10 +921,12 @@ class CodexService:
 
         final_name = (account_name or "").strip()
         if not final_name:
-            final_name = email or "Codex Account"
+            final_name = openai_account_id or email or "Codex Account"
 
         existing = None
-        if email:
+        if openai_account_id:
+            existing = await self.repo.get_by_user_id_and_openai_account_id(user_id, openai_account_id)
+        elif email:
             existing = await self.repo.get_by_user_id_and_email(user_id, email)
 
         if existing:
@@ -1095,8 +1099,21 @@ class CodexService:
                 err_text = str(raw_err)
 
             if resp.status_code == 429:
-                bucket = _infer_limit_bucket(err_text)
-                await self._mark_rate_limited(selected, bucket=bucket, retry_at=retry_at, raw_error=err_text)
+                # 优先用响应头同步 ratelimit（有些上游会在 429 时带 reset 信息）。
+                await self._update_account_after_success(selected, resp.headers)
+
+                # 如果 header 没给出 reset_at，再尝试用 wham/usage 拿到准确的窗口重置时间。
+                if not getattr(selected, "is_frozen", False) and retry_at is None:
+                    await self._sync_limits_from_wham_usage_best_effort(
+                        selected,
+                        creds,
+                        access_token=access_token,
+                        chatgpt_account_id=chatgpt_account_id,
+                    )
+
+                if not getattr(selected, "is_frozen", False):
+                    bucket = _infer_limit_bucket(err_text)
+                    await self._mark_rate_limited(selected, bucket=bucket, retry_at=retry_at, raw_error=err_text)
                 last_error = "账号触发限额，已自动切换下一个账号"
                 continue
 
@@ -1363,8 +1380,21 @@ class CodexService:
                     continue
 
                 if resp.status_code == 429:
-                    bucket = _infer_limit_bucket(err_text)
-                    await self._mark_rate_limited(account, bucket=bucket, retry_at=retry_at, raw_error=err_text)
+                    # 优先用响应头同步 ratelimit（有些上游会在 429 时带 reset 信息）。
+                    await self._update_account_after_success(account, resp.headers)
+
+                    # 如果 header 没给出 reset_at，再尝试用 wham/usage 拿到准确的窗口重置时间。
+                    if not getattr(account, "is_frozen", False) and retry_at is None:
+                        await self._sync_limits_from_wham_usage_best_effort(
+                            account,
+                            creds,
+                            access_token=access_token,
+                            chatgpt_account_id=chatgpt_account_id,
+                        )
+
+                    if not getattr(account, "is_frozen", False):
+                        bucket = _infer_limit_bucket(err_text)
+                        await self._mark_rate_limited(account, bucket=bucket, retry_at=retry_at, raw_error=err_text)
                     until = getattr(account, "frozen_until", None)
                     if until:
                         raise ValueError(f"账号触发限额，已冻结至：{_iso(until)}")
@@ -1824,6 +1854,68 @@ class CodexService:
 
         await self.db.flush()
         await self.db.commit()
+
+    async def _sync_limits_from_wham_usage_best_effort(
+        self,
+        account: Any,
+        creds: Dict[str, Any],
+        *,
+        access_token: str,
+        chatgpt_account_id: str,
+    ) -> None:
+        """
+        尝试用 `wham/usage` 同步 5h/周限字段（主要用于 429 时拿到准确的 reset_at）。
+
+        说明：这是 best-effort；失败直接忽略，不影响主调用链路。
+        """
+        try:
+            wham_raw = await self._fetch_wham_usage_raw(
+                account,
+                creds,
+                access_token=access_token,
+                chatgpt_account_id=chatgpt_account_id,
+            )
+        except Exception:
+            return
+
+        now = _now_utc()
+        parsed = _parse_wham_usage(wham_raw, now=now)
+        rl = parsed.get("rate_limit") if isinstance(parsed, dict) else {}
+        if not isinstance(rl, dict):
+            rl = {}
+        five = rl.get("primary_window") if isinstance(rl.get("primary_window"), dict) else {}
+        week = rl.get("secondary_window") if isinstance(rl.get("secondary_window"), dict) else {}
+
+        p5 = five.get("used_percent") if isinstance(five, dict) else None
+        r5 = five.get("reset_at") if isinstance(five, dict) else None
+        pw = week.get("used_percent") if isinstance(week, dict) else None
+        rw = week.get("reset_at") if isinstance(week, dict) else None
+
+        if p5 is None and pw is None and not isinstance(r5, datetime) and not isinstance(rw, datetime):
+            return
+
+        changed = False
+        if isinstance(p5, int):
+            account.limit_5h_used_percent = int(p5)
+            changed = True
+        if isinstance(r5, datetime):
+            account.limit_5h_reset_at = r5
+            changed = True
+        if isinstance(pw, int):
+            account.limit_week_used_percent = int(pw)
+            changed = True
+        if isinstance(rw, datetime):
+            account.limit_week_reset_at = rw
+            changed = True
+
+        if not changed:
+            return
+
+        try:
+            await self.db.flush()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
 
     async def _update_account_after_success(self, account: Any, headers: httpx.Headers) -> None:
         """

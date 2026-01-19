@@ -1845,6 +1845,9 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                       onChange={(e) => setCodexAccountName(e.target.value)}
                       className="h-12"
                     />
+                    <p className="text-sm text-muted-foreground">
+                      留空会自动使用 account_id 作为名称（同一邮箱不同团队会分别保存）
+                    </p>
                   </div>
 
                   {codexLoginMethod === 'json' ? (

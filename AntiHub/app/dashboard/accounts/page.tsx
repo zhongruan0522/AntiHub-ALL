@@ -164,6 +164,8 @@ export default function AccountsPage() {
   const [codexWhamAccount, setCodexWhamAccount] = useState<CodexAccount | null>(null);
   const [codexWhamData, setCodexWhamData] = useState<CodexWhamUsageData | null>(null);
   const [isLoadingCodexWham, setIsLoadingCodexWham] = useState(false);
+  const [isRefreshingAllCodexQuotas, setIsRefreshingAllCodexQuotas] = useState(false);
+  const [refreshAllCodexProgress, setRefreshAllCodexProgress] = useState<{ current: number; total: number } | null>(null);
 
   // 确认对话框状态
   const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
@@ -892,12 +894,9 @@ export default function AccountsPage() {
     setRefreshingCodexAccountId(accountId);
     try {
       const updated = await refreshCodexAccount(accountId);
-      setCodexAccounts(
-        codexAccounts.map((a) => (a.account_id === accountId ? { ...a, ...updated } : a))
-      );
-      if (detailCodexAccount && detailCodexAccount.account_id === accountId) {
-        setDetailCodexAccount({ ...detailCodexAccount, ...updated });
-      }
+      setCodexAccounts((prev) => prev.map((a) => (a.account_id === accountId ? { ...a, ...updated } : a)));
+      setDetailCodexAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
+      setCodexWhamAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
       toasterRef.current?.show({
         title: '刷新成功',
         message: '已从官方刷新额度/限额',
@@ -914,6 +913,55 @@ export default function AccountsPage() {
     } finally {
       setRefreshingCodexAccountId(null);
     }
+  };
+
+  const handleRefreshAllCodexQuotas = async () => {
+    if (isRefreshingAllCodexQuotas) return;
+    if (!codexAccounts.length) return;
+
+    const accountsToRefresh = codexAccounts;
+    const total = accountsToRefresh.length;
+
+    setIsRefreshingAllCodexQuotas(true);
+    setRefreshAllCodexProgress({ current: 0, total });
+
+    let okCount = 0;
+    let failCount = 0;
+
+    try {
+      // 一个个刷新，避免并发打爆上游/触发风控
+      for (let i = 0; i < accountsToRefresh.length; i++) {
+        const account = accountsToRefresh[i];
+        const accountId = account.account_id;
+        setRefreshAllCodexProgress({ current: i + 1, total });
+        setRefreshingCodexAccountId(accountId);
+
+        try {
+          const updated = await refreshCodexAccount(accountId);
+          okCount += 1;
+          setCodexAccounts((prev) => prev.map((a) => (a.account_id === accountId ? { ...a, ...updated } : a)));
+          setDetailCodexAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
+          setCodexWhamAccount((prev) => (prev && prev.account_id === accountId ? { ...prev, ...updated } : prev));
+        } catch (err) {
+          failCount += 1;
+          console.warn('刷新 Codex 账号失败:', accountId, err);
+        }
+      }
+    } finally {
+      setRefreshingCodexAccountId(null);
+      setRefreshAllCodexProgress(null);
+      setIsRefreshingAllCodexQuotas(false);
+    }
+
+    toasterRef.current?.show({
+      title: '批量刷新完成',
+      message:
+        failCount > 0
+          ? `已刷新 ${okCount}/${total} 个账号的剩余额度（失败 ${failCount} 个）`
+          : `已刷新 ${okCount}/${total} 个账号的剩余额度`,
+      variant: failCount > 0 ? 'warning' : 'success',
+      position: 'top-right',
+    });
   };
 
   const handleViewCodexWhamUsage = async (account: CodexAccount) => {
@@ -1176,7 +1224,7 @@ export default function AccountsPage() {
                 variant="outline"
                 size="default"
                 onClick={handleRefresh}
-                disabled={isRefreshing}
+                disabled={isRefreshing || (activeTab === 'codex' && isRefreshingAllCodexQuotas)}
               >
                 {isRefreshing ? (
                   <MorphingSquare className="size-4" />
@@ -1561,10 +1609,34 @@ export default function AccountsPage() {
         {activeTab === 'codex' && (
           <Card>
             <CardHeader className="text-left">
-              <CardTitle className="text-left">Codex账号</CardTitle>
-              <CardDescription className="text-left">
-                共 {codexAccounts.length} 个账号
-              </CardDescription>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <CardTitle className="text-left">Codex账号</CardTitle>
+                  <CardDescription className="text-left">
+                    共 {codexAccounts.length} 个账号
+                    {isRefreshingAllCodexQuotas && refreshAllCodexProgress
+                      ? `，正在刷新 ${refreshAllCodexProgress.current}/${refreshAllCodexProgress.total}`
+                      : ''}
+                  </CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="default"
+                  onClick={handleRefreshAllCodexQuotas}
+                  disabled={
+                    isRefreshingAllCodexQuotas ||
+                    refreshingCodexAccountId !== null ||
+                    codexAccounts.length === 0
+                  }
+                >
+                  {isRefreshingAllCodexQuotas ? (
+                    <MorphingSquare className="size-4" />
+                  ) : (
+                    <IconRefresh className="size-4" />
+                  )}
+                  <span className="ml-2">刷新全部剩余额度</span>
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {codexAccounts.length === 0 ? (
@@ -1581,8 +1653,9 @@ export default function AccountsPage() {
                         <TableHead className="min-w-[160px]">账号名称</TableHead>
                         <TableHead className="min-w-[220px]">邮箱</TableHead>
                         <TableHead className="min-w-[120px]">订阅</TableHead>
+                        <TableHead className="min-w-[120px]">剩余额度</TableHead>
                         <TableHead className="min-w-[80px]">状态</TableHead>
-                        <TableHead className="min-w-[120px]">5小时/周限</TableHead>
+                        <TableHead className="min-w-[120px]">5小时/周剩余</TableHead>
                         <TableHead className="min-w-[180px]">解冻时间</TableHead>
                         <TableHead className="min-w-[180px]">Token过期</TableHead>
                         <TableHead className="min-w-[180px]">添加时间</TableHead>
@@ -1606,6 +1679,11 @@ export default function AccountsPage() {
                               {account.chatgpt_plan_type || '-'}
                             </Badge>
                           </TableCell>
+                          <TableCell className="font-mono text-sm whitespace-nowrap">
+                            {account.quota_remaining === null || account.quota_remaining === undefined
+                              ? '-'
+                              : `${Number(account.quota_remaining).toFixed(2)}${account.quota_currency ? ` ${account.quota_currency}` : ''}`}
+                          </TableCell>
                           <TableCell>
                             <Badge
                               variant={(account.effective_status ?? account.status) === 1 ? 'default' : 'secondary'}
@@ -1615,9 +1693,21 @@ export default function AccountsPage() {
                             </Badge>
                           </TableCell>
                           <TableCell className="font-mono text-sm whitespace-nowrap">
-                            {`${account.limit_5h_used_percent === null || account.limit_5h_used_percent === undefined ? '-' : account.limit_5h_used_percent
-                              }/${account.limit_week_used_percent === null || account.limit_week_used_percent === undefined ? '-' : account.limit_week_used_percent
-                              }`}
+                            {(() => {
+                              const format = (used: number | null | undefined, resetAt: string | null | undefined) => {
+                                if (resetAt) {
+                                  const t = new Date(resetAt).getTime();
+                                  if (!Number.isNaN(t) && t <= Date.now()) {
+                                    return '100%';
+                                  }
+                                }
+                                if (used === null || used === undefined) return '-';
+                                const remaining = Math.max(0, Math.min(100, 100 - used));
+                                return `${remaining}%`;
+                              };
+
+                              return `${format(account.limit_5h_used_percent, account.limit_5h_reset_at)}/${format(account.limit_week_used_percent, account.limit_week_reset_at)}`;
+                            })()}
                           </TableCell>
                           <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                             {account.is_frozen
@@ -1646,7 +1736,7 @@ export default function AccountsPage() {
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   onClick={() => handleRefreshCodexOfficial(account)}
-                                  disabled={refreshingCodexAccountId === account.account_id}
+                                  disabled={isRefreshingAllCodexQuotas || refreshingCodexAccountId === account.account_id}
                                 >
                                   <IconRefresh className="size-4 mr-2" />
                                   {refreshingCodexAccountId === account.account_id ? '刷新中...' : '刷新官方额度/限额'}
@@ -2210,11 +2300,9 @@ export default function AccountsPage() {
                     {(() => {
                       const w5 = codexWhamData.parsed.rate_limit?.primary_window;
                       const ww = codexWhamData.parsed.rate_limit?.secondary_window;
-                      const wc = codexWhamData.parsed.code_review_rate_limit?.primary_window;
                       const rows = [
                         { name: '5 小时限额', w: w5 },
                         { name: '周限额', w: ww },
-                        { name: '代码审查限额', w: wc },
                       ];
 
                       return rows.map((row) => {
