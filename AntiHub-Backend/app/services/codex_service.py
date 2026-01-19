@@ -67,13 +67,66 @@ CODEX_MODEL_ALIASES = {
     "codex-mini": "gpt-5-codex-mini",
 }
 
-CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_API_BASE_URL = (os.getenv("CODEX_API_BASE_URL") or "https://chatgpt.com/backend-api/codex").rstrip("/")
 CODEX_RESPONSES_URL = f"{CODEX_API_BASE_URL}/responses"
 CODEX_DEFAULT_VERSION = "0.21.0"
 CODEX_OPENAI_BETA = "responses=experimental"
 CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.50.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
 
 logger = logging.getLogger(__name__)
+
+
+def _get_outbound_proxy_url() -> str:
+    """
+    出站代理（可选）。
+
+    背景：很多部署环境（尤其是容器/国内网络）直连 `chatgpt.com/auth.openai.com/api.openai.com`
+    会超时；参考项目 CLIProxyAPI 通过 proxy-url 解决。本项目用环境变量做最小实现。
+    """
+    for key in ("CODEX_PROXY_URL", "OPENAI_PROXY_URL", "PROXY_URL"):
+        v = (os.getenv(key) or "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _redact_proxy_url(proxy_url: str) -> str:
+    if not proxy_url:
+        return ""
+    try:
+        u = urlparse(proxy_url)
+    except Exception:
+        return ""
+    if not u.scheme:
+        return ""
+    host = u.hostname or ""
+    if not host:
+        return f"{u.scheme}://"
+    if u.port:
+        host = f"{host}:{u.port}"
+    return f"{u.scheme}://{host}"
+
+
+def _get_httpx_proxies() -> Optional[Dict[str, str]]:
+    proxy_url = _get_outbound_proxy_url()
+    if not proxy_url:
+        return None
+
+    # httpx==0.25.*：SOCKS 代理需要额外安装 socksio（httpx[socks]）
+    scheme = proxy_url.strip().lower()
+    if scheme.startswith(("socks5://", "socks5h://", "socks4://", "socks4a://")):
+        try:
+            import socksio  # type: ignore
+        except Exception as e:
+            raise ValueError(
+                "已配置 SOCKS 代理，但当前环境未安装 socks 支持；请安装 `httpx[socks]`（或改用 HTTP 代理）"
+            ) from e
+
+    return {"http://": proxy_url, "https://": proxy_url}
+
+
+def _build_httpx_async_client(*, timeout: Optional[httpx.Timeout], follow_redirects: bool = False) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=follow_redirects, proxies=_get_httpx_proxies())
 
 
 @dataclass(frozen=True)
@@ -837,7 +890,9 @@ class CodexService:
                 user_agent=user_agent,
             )
 
-            client = httpx.AsyncClient(timeout=None)
+            # SSE：read 不设超时，但 connect 必须可控，否则网络问题会“挂死”等到上层超时（前端常见 504）。
+            timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+            client = _build_httpx_async_client(timeout=timeout, follow_redirects=True)
             try:
                 req = client.build_request("POST", CODEX_RESPONSES_URL, json=body, headers=headers)
                 resp = await client.send(req, stream=True)
@@ -1041,8 +1096,9 @@ class CodexService:
         ping_model = _pick_codex_ping_model(_get_supported_models())
         body = _normalize_codex_responses_request({"model": ping_model or "gpt-5.2-codex", "input": "ping", "max_output_tokens": 1})
 
-        timeout = httpx.Timeout(60.0)
-        client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+        # 刷新只依赖响应头 ratelimit；connect 超时尽量短，避免前端/反代先 504。
+        timeout = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
+        client = _build_httpx_async_client(timeout=timeout, follow_redirects=True)
         resp: Optional[httpx.Response] = None
         try:
             # 最多重试 1 次：401 时尝试 refresh_token 刷新再打一次
@@ -1056,15 +1112,26 @@ class CodexService:
                 try:
                     resp = await client.send(req, stream=True)
                 except httpx.HTTPError as e:
+                    proxy_hint = _redact_proxy_url(_get_outbound_proxy_url()) or "-"
+                    try:
+                        url_hint = str(req.url)
+                    except Exception:
+                        url_hint = "-"
                     logger.warning(
-                        "codex refresh: upstream request failed: user_id=%s account_id=%s attempt=%s error=%s",
+                        "codex refresh: upstream request failed: user_id=%s account_id=%s attempt=%s url=%s proxy=%s error=%s",
                         user_id,
                         account_id,
                         attempt,
+                        url_hint,
+                        proxy_hint,
                         type(e).__name__,
                         exc_info=True,
                     )
-                    raise ValueError(f"刷新失败：上游请求异常（{type(e).__name__}）") from e
+
+                    tip = ""
+                    if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError)):
+                        tip = "；请检查网络/代理（可设置 CODEX_PROXY_URL，例如 http://host.docker.internal:7890）"
+                    raise ValueError(f"刷新失败：上游请求异常（{type(e).__name__}）{tip}") from e
 
                 if 200 <= resp.status_code < 300:
                     await self._update_account_after_success(account, resp.headers)
@@ -1165,7 +1232,7 @@ class CodexService:
             return None
 
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with _build_httpx_async_client(timeout=httpx.Timeout(20.0)) as client:
             for url in OPENAI_CREDIT_GRANTS_URLS:
                 try:
                     resp = await client.get(url, headers=headers)
@@ -1198,7 +1265,7 @@ class CodexService:
             "redirect_uri": OPENAI_REDIRECT_URI,
             "code_verifier": code_verifier,
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with _build_httpx_async_client(timeout=httpx.Timeout(30.0)) as client:
             resp = await client.post(
                 OPENAI_TOKEN_URL,
                 data=form,
@@ -1253,7 +1320,7 @@ class CodexService:
             "refresh_token": refresh_token,
             "scope": "openid profile email",
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with _build_httpx_async_client(timeout=httpx.Timeout(30.0)) as client:
             resp = await client.post(
                 OPENAI_TOKEN_URL,
                 data=form,
