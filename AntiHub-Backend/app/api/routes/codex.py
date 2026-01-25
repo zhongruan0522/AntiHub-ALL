@@ -28,6 +28,7 @@ from app.schemas.codex import (
     CodexAccountUpdateQuotaRequest,
     CodexAccountUpdateLimitsRequest,
     CodexAccountResponse,
+    CodexFallbackConfigUpsertRequest,
 )
 from app.services.codex_service import CodexService
 
@@ -55,6 +56,55 @@ async def list_codex_models(service: CodexService = Depends(get_codex_service)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="获取模型列表失败",
+        )
+
+
+@router.get("/fallback", summary="获取 CodexCLI 兜底服务配置")
+async def get_codex_fallback_config(
+    current_user: User = Depends(get_current_user),
+    service: CodexService = Depends(get_codex_service),
+):
+    try:
+        return await service.get_fallback_config(user_id=current_user.id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取兜底服务配置失败",
+        )
+
+
+@router.put("/fallback", summary="保存 CodexCLI 兜底服务配置")
+async def upsert_codex_fallback_config(
+    request: CodexFallbackConfigUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    service: CodexService = Depends(get_codex_service),
+):
+    try:
+        return await service.upsert_fallback_config(
+            user_id=current_user.id,
+            base_url=request.base_url,
+            api_key=request.api_key,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="保存兜底服务配置失败",
+        )
+
+
+@router.delete("/fallback", summary="清空 CodexCLI 兜底服务配置")
+async def delete_codex_fallback_config(
+    current_user: User = Depends(get_current_user),
+    service: CodexService = Depends(get_codex_service),
+):
+    try:
+        return await service.delete_fallback_config(user_id=current_user.id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="清空兜底服务配置失败",
         )
 
 

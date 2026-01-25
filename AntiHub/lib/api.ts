@@ -2211,6 +2211,48 @@ export async function deleteCodexAccount(accountId: number): Promise<any> {
   return result.data;
 }
 
+// ==================== CodexCLI 兜底服务配置 ====================
+
+export interface CodexFallbackConfig {
+  platform: string;
+  base_url: string | null;
+  has_key: boolean;
+  api_key_masked?: string | null;
+}
+
+export async function getCodexFallbackConfig(): Promise<CodexFallbackConfig> {
+  const result = await fetchWithAuth<{ success: boolean; data: CodexFallbackConfig }>(
+    `${API_BASE_URL}/api/codex/fallback`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+export async function saveCodexFallbackConfig(payload: {
+  base_url: string;
+  api_key?: string | null;
+}): Promise<CodexFallbackConfig> {
+  const result = await fetchWithAuth<{ success: boolean; data: CodexFallbackConfig }>(
+    `${API_BASE_URL}/api/codex/fallback`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        base_url: payload.base_url,
+        api_key: payload.api_key ?? null,
+      }),
+    }
+  );
+  return result.data;
+}
+
+export async function clearCodexFallbackConfig(): Promise<CodexFallbackConfig> {
+  const result = await fetchWithAuth<{ success: boolean; data: CodexFallbackConfig }>(
+    `${API_BASE_URL}/api/codex/fallback`,
+    { method: 'DELETE' }
+  );
+  return result.data;
+}
+
 // ==================== GeminiCLI 账号管理相关 API ====================
 
 export interface GeminiCLIAccount {

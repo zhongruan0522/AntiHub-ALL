@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache import RedisClient
 from app.repositories.codex_account_repository import CodexAccountRepository
+from app.repositories.codex_fallback_config_repository import CodexFallbackConfigRepository
 from app.utils.encryption import encrypt_api_key as encrypt_secret
 from app.utils.encryption import decrypt_api_key as decrypt_secret
 
@@ -76,6 +77,7 @@ CODEX_WHAM_USAGE_URL = f"{_CODEX_BASE_FOR_WHAM}/wham/usage"
 CODEX_DEFAULT_VERSION = "0.21.0"
 CODEX_OPENAI_BETA = "responses=experimental"
 CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.50.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
+CODEX_FALLBACK_PLATFORM = "CodexCLI"
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +288,49 @@ def _safe_str(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _mask_secret(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 8:
+        return "*" * len(raw)
+    return raw[:3] + ("*" * (len(raw) - 7)) + raw[-4:]
+
+
+def _normalize_fallback_base_url(base_url: str) -> str:
+    raw = (base_url or "").strip()
+    if not raw:
+        raise ValueError("base_url 不能为空")
+
+    raw = raw.rstrip("/")
+    # 用户可能会直接粘贴完整 `/responses`，这里兜底去掉，避免重复拼接。
+    if raw.lower().endswith("/responses"):
+        raw = raw[: -len("/responses")].rstrip("/")
+
+    u = urlparse(raw)
+    if u.scheme not in ("http", "https") or not u.netloc:
+        raise ValueError("base_url 必须是以 http(s):// 开头的完整地址")
+
+    return raw
+
+
+def _join_base_url(base_url: str, path: str) -> str:
+    b = (base_url or "").rstrip("/")
+    p = path if path.startswith("/") else ("/" + path)
+    return b + p
+
+
+def _normalize_fallback_responses_request(request_data: Dict[str, Any]) -> Dict[str, Any]:
+    # 非流式请求也需要通过 SSE 抽取 response.completed（与 Codex 主链路一致）。
+    body = dict(request_data or {})
+    body["stream"] = True
+    if "model" in body:
+        resolved = _resolve_codex_model_name(body.get("model"))
+        if resolved:
+            body["model"] = resolved
+    return body
 
 
 def _extract_error_detail_code(err_text: str) -> str:
@@ -777,6 +822,7 @@ class CodexService:
         self.db = db
         self.redis = redis
         self.repo = CodexAccountRepository(db)
+        self.fallback_repo = CodexFallbackConfigRepository(db)
 
     async def get_models(self) -> Dict[str, Any]:
         models = _get_supported_models()
@@ -791,6 +837,108 @@ class CodexService:
         """
         models = _get_supported_models()
         return {"object": "list", "data": [{"id": m, "object": "model"} for m in models]}
+
+    async def get_fallback_config(self, *, user_id: int) -> Dict[str, Any]:
+        """
+        获取 CodexCLI 兜底服务配置（不返回明文 KEY）。
+        """
+        cfg = await self.fallback_repo.get_by_user_id(user_id)
+        if not cfg or not getattr(cfg, "is_active", True):
+            return {
+                "success": True,
+                "data": {
+                    "platform": CODEX_FALLBACK_PLATFORM,
+                    "base_url": None,
+                    "has_key": False,
+                    "api_key_masked": None,
+                },
+            }
+
+        masked = None
+        has_key = False
+        try:
+            raw_key = decrypt_secret(cfg.api_key)
+            if (raw_key or "").strip():
+                has_key = True
+                masked = _mask_secret(raw_key)
+        except Exception:
+            # 解密失败按“未配置”处理，避免把异常扩散到设置页
+            has_key = False
+            masked = None
+
+        return {
+            "success": True,
+            "data": {
+                "platform": CODEX_FALLBACK_PLATFORM,
+                "base_url": cfg.base_url,
+                "has_key": has_key,
+                "api_key_masked": masked,
+            },
+        }
+
+    async def upsert_fallback_config(
+        self,
+        *,
+        user_id: int,
+        base_url: str,
+        api_key: Optional[str],
+    ) -> Dict[str, Any]:
+        """
+        保存/更新 CodexCLI 兜底服务配置。
+
+        约定：
+        - base_url 必填
+        - api_key 允许留空：仅更新 base_url，保留旧 KEY（前提是已存在）
+        """
+        normalized_base = _normalize_fallback_base_url(base_url)
+        key_raw = (api_key or "").strip()
+
+        existing = await self.fallback_repo.get_by_user_id(user_id)
+
+        if not key_raw:
+            if not existing:
+                raise ValueError("api_key 不能为空")
+            encrypted_key = existing.api_key
+        else:
+            encrypted_key = encrypt_secret(key_raw)
+
+        if existing:
+            cfg = await self.fallback_repo.update(
+                user_id=user_id,
+                base_url=normalized_base,
+                api_key=encrypted_key,
+                is_active=True,
+            )
+        else:
+            cfg = await self.fallback_repo.create(user_id=user_id, base_url=normalized_base, api_key=encrypted_key)
+
+        masked = None
+        try:
+            masked = _mask_secret(decrypt_secret(cfg.api_key))
+        except Exception:
+            masked = None
+
+        return {
+            "success": True,
+            "data": {
+                "platform": CODEX_FALLBACK_PLATFORM,
+                "base_url": cfg.base_url,
+                "has_key": True,
+                "api_key_masked": masked,
+            },
+        }
+
+    async def delete_fallback_config(self, *, user_id: int) -> Dict[str, Any]:
+        await self.fallback_repo.delete(user_id=user_id)
+        return {
+            "success": True,
+            "data": {
+                "platform": CODEX_FALLBACK_PLATFORM,
+                "base_url": None,
+                "has_key": False,
+                "api_key_masked": None,
+            },
+        }
 
     async def create_oauth_authorize_url(
         self,
@@ -1074,6 +1222,78 @@ class CodexService:
             credential_obj = {"raw": decrypted}
         return {"success": True, "data": credential_obj}
 
+    async def _open_fallback_responses_stream(
+        self,
+        *,
+        user_id: int,
+        request_data: Dict[str, Any],
+        user_agent: Optional[str],
+        reason: str,
+    ) -> Optional[Tuple[httpx.AsyncClient, httpx.Response]]:
+        cfg = await self.fallback_repo.get_by_user_id(user_id)
+        if not cfg or not getattr(cfg, "is_active", True):
+            return None
+
+        base_url = _normalize_fallback_base_url(cfg.base_url)
+        try:
+            api_key = decrypt_secret(cfg.api_key)
+        except Exception:
+            api_key = ""
+        if not (api_key or "").strip():
+            return None
+
+        url = _join_base_url(base_url, "/responses")
+        body = _normalize_fallback_responses_request(request_data)
+
+        ua = (user_agent or "").strip() or CODEX_DEFAULT_USER_AGENT
+        headers: Dict[str, str] = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "text/event-stream",
+            "Connection": "Keep-Alive",
+            "Openai-Beta": CODEX_OPENAI_BETA,
+            "User-Agent": ua,
+        }
+
+        timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+        client = _build_httpx_async_client(timeout=timeout, follow_redirects=True)
+        try:
+            req = client.build_request("POST", url, json=body, headers=headers)
+            resp = await client.send(req, stream=True)
+        except Exception:
+            await client.aclose()
+            raise
+
+        if 200 <= resp.status_code < 300:
+            logger.warning(
+                "codex fallback enabled: user_id=%s base_url=%s reason=%s",
+                user_id,
+                base_url,
+                (reason or "")[:200],
+            )
+            return client, resp
+
+        raw_err = await resp.aread()
+        headers_copy = resp.headers
+        status_code = resp.status_code
+        await resp.aclose()
+        await client.aclose()
+
+        try:
+            err_text = raw_err.decode("utf-8", errors="replace")
+        except Exception:
+            err_text = str(raw_err)
+
+        raise httpx.HTTPStatusError(
+            f"Codex fallback upstream error: HTTP {status_code}",
+            request=None,
+            response=type(
+                "R",
+                (),
+                {"status_code": status_code, "text": err_text, "headers": headers_copy},
+            )(),
+        )
+
     async def open_codex_responses_stream(
         self,
         user_id: int,
@@ -1102,6 +1322,15 @@ class CodexService:
         while True:
             selected = await self._select_active_account_obj(user_id, exclude_ids=exclude_ids)
             if selected is None:
+                fallback = await self._open_fallback_responses_stream(
+                    user_id=user_id,
+                    request_data=request_data,
+                    user_agent=user_agent,
+                    reason=last_error or "no_available_codex_account",
+                )
+                if fallback is not None:
+                    client, resp = fallback
+                    return client, resp, None
                 raise ValueError(last_error or "没有可用的 Codex 账号")
 
             exclude_ids.add(int(getattr(selected, "id", 0) or 0))

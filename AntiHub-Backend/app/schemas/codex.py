@@ -110,3 +110,19 @@ class CodexAccountListResponse(BaseModel):
 class CodexAccountCredentialsResponse(BaseModel):
     success: bool = True
     data: Dict[str, Any]
+
+
+class CodexFallbackConfigUpsertRequest(BaseModel):
+    """保存/更新 CodexCLI 兜底服务配置"""
+
+    base_url: str = Field(..., description="兜底上游基础URL（例如 https://api.openai.com/v1）")
+    api_key: Optional[str] = Field(None, description="兜底上游KEY（可留空：不修改）")
+
+
+class CodexFallbackConfigData(BaseModel):
+    """读取用：不返回明文 KEY"""
+
+    platform: str = Field("CodexCLI", description="平台")
+    base_url: Optional[str] = Field(None, description="兜底上游基础URL")
+    has_key: bool = Field(False, description="是否已保存KEY")
+    api_key_masked: Optional[str] = Field(None, description="脱敏后的KEY（可选）")

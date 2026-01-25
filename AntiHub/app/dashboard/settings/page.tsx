@@ -5,10 +5,13 @@ import {
   deleteAPIKey,
   generateAPIKey,
   getAPIKeys,
+  getCodexFallbackConfig,
   getCurrentUser,
   getKiroSubscriptionModelRules,
   getOpenAIModels,
+  saveCodexFallbackConfig,
   upsertKiroSubscriptionModelRule,
+  clearCodexFallbackConfig,
   type KiroSubscriptionModelRule,
   type OpenAIModel,
   type PluginAPIKey,
@@ -58,6 +61,15 @@ export default function SettingsPage() {
 
   const [apiEndpoint, setApiEndpoint] = useState(() => getPublicApiBaseUrl());
 
+  // CodexCLI 兜底服务（当 Codex 账号全部冻结/不可用时，转发到自定义 /responses 上游）
+  const [codexFallbackBaseUrl, setCodexFallbackBaseUrl] = useState('');
+  const [codexFallbackKey, setCodexFallbackKey] = useState('');
+  const [codexFallbackHasKey, setCodexFallbackHasKey] = useState(false);
+  const [codexFallbackKeyMasked, setCodexFallbackKeyMasked] = useState<string | null>(null);
+  const [isCodexFallbackLoading, setIsCodexFallbackLoading] = useState(false);
+  const [isCodexFallbackSaving, setIsCodexFallbackSaving] = useState(false);
+  const [isCodexFallbackClearing, setIsCodexFallbackClearing] = useState(false);
+
   useEffect(() => {
     const base = getPublicApiBaseUrl();
     if (/^https?:\/\//i.test(base)) return;
@@ -71,6 +83,27 @@ export default function SettingsPage() {
     } catch (err) {
       // 如果没有 API Key,这是正常的
       setApiKeys([]);
+    }
+  };
+
+  const loadCodexFallback = async () => {
+    setIsCodexFallbackLoading(true);
+    try {
+      const data = await getCodexFallbackConfig();
+      setCodexFallbackBaseUrl(data.base_url || '');
+      setCodexFallbackHasKey(Boolean(data.has_key));
+      setCodexFallbackKeyMasked(data.api_key_masked || null);
+      setCodexFallbackKey('');
+    } catch (err) {
+      // 不阻塞设置页，其它功能不依赖兜底配置
+      toasterRef.current?.show({
+        title: '加载失败',
+        message: err instanceof Error ? err.message : '获取 CodexCLI 兜底配置失败',
+        variant: 'warning',
+        position: 'top-right',
+      });
+    } finally {
+      setIsCodexFallbackLoading(false);
     }
   };
 
@@ -220,6 +253,8 @@ export default function SettingsPage() {
         const userData = await getCurrentUser();
         setCurrentUser(userData);
 
+        await loadCodexFallback();
+
         if (userData.trust_level >= 3) {
           await loadKiroAdminConfig();
         }
@@ -312,6 +347,79 @@ export default function SettingsPage() {
       variant: 'success',
       position: 'top-right',
     });
+  };
+
+  const handleSaveCodexFallback = async () => {
+    const baseUrl = codexFallbackBaseUrl.trim();
+    const key = codexFallbackKey.trim();
+
+    if (!baseUrl) {
+      toasterRef.current?.show({
+        title: '输入错误',
+        message: '请填写基础URL（例如 https://api.openai.com/v1）',
+        variant: 'warning',
+        position: 'top-right',
+      });
+      return;
+    }
+
+    setIsCodexFallbackSaving(true);
+    try {
+      const data = await saveCodexFallbackConfig({
+        base_url: baseUrl,
+        api_key: key ? key : null,
+      });
+
+      setCodexFallbackBaseUrl(data.base_url || baseUrl);
+      setCodexFallbackHasKey(Boolean(data.has_key));
+      setCodexFallbackKeyMasked(data.api_key_masked || null);
+      setCodexFallbackKey('');
+
+      toasterRef.current?.show({
+        title: '已保存',
+        message: 'CodexCLI 兜底服务配置已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '保存失败',
+        message: err instanceof Error ? err.message : '保存 CodexCLI 兜底配置失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsCodexFallbackSaving(false);
+    }
+  };
+
+  const handleClearCodexFallback = async () => {
+    if (!confirm('确定要清空 CodexCLI 兜底服务配置吗？')) return;
+
+    setIsCodexFallbackClearing(true);
+    try {
+      const data = await clearCodexFallbackConfig();
+      setCodexFallbackBaseUrl(data.base_url || '');
+      setCodexFallbackHasKey(Boolean(data.has_key));
+      setCodexFallbackKeyMasked(data.api_key_masked || null);
+      setCodexFallbackKey('');
+
+      toasterRef.current?.show({
+        title: '已清空',
+        message: 'CodexCLI 兜底服务配置已清空',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '清空失败',
+        message: err instanceof Error ? err.message : '清空 CodexCLI 兜底配置失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsCodexFallbackClearing(false);
+    }
   };
 
   const maskApiKey = (key: string) => {
@@ -468,6 +576,94 @@ export default function SettingsPage() {
                   <p className="font-sm text-muted-foreground">你需要提供有效的 API 密钥才能访问此端点。要获取模型列表，你的账户内至少需要添加一个可用账号。我们支持 OpenAI 格式或 Anthropic 格式的消息。</p>
                 </div>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* CodexCLI 兜底服务 */}
+        <Card className="mt-6">
+          <CardHeader>
+            <div className="space-y-1.5">
+              <CardTitle className="flex items-center gap-2">
+                CodexCLI 兜底服务
+              </CardTitle>
+              <CardDescription>
+                当 Codex 账号全部冻结/不可用时，自动转发到你配置的上游（程序会自动补全 <span className="font-mono">/responses</span>）。
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="text-left p-3 font-medium">平台</th>
+                    <th className="text-left p-3 font-medium">基础URL</th>
+                    <th className="text-left p-3 font-medium">KEY</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="p-3 align-top">
+                      <Badge variant="secondary">CodexCLI</Badge>
+                    </td>
+                    <td className="p-3 align-top">
+                      <Input
+                        value={codexFallbackBaseUrl}
+                        onChange={(e) => setCodexFallbackBaseUrl(e.target.value)}
+                        placeholder="https://api.openai.com/v1"
+                        className="font-mono text-sm"
+                        disabled={isCodexFallbackLoading || isCodexFallbackSaving || isCodexFallbackClearing}
+                      />
+                    </td>
+                    <td className="p-3 align-top">
+                      <Input
+                        type="password"
+                        value={codexFallbackKey}
+                        onChange={(e) => setCodexFallbackKey(e.target.value)}
+                        placeholder={codexFallbackHasKey ? (codexFallbackKeyMasked || '已保存') : '请输入KEY'}
+                        className="font-mono text-sm"
+                        disabled={isCodexFallbackLoading || isCodexFallbackSaving || isCodexFallbackClearing}
+                      />
+                      {codexFallbackHasKey && !codexFallbackKey.trim() && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          已保存 KEY（不会在前端显示明文）。留空并保存 = 不修改 KEY。
+                        </p>
+                      )}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={handleClearCodexFallback}
+                disabled={isCodexFallbackSaving || isCodexFallbackClearing || isCodexFallbackLoading}
+              >
+                {isCodexFallbackClearing ? (
+                  <>
+                    <MorphingSquare className="size-4 mr-2" />
+                    清空中...
+                  </>
+                ) : (
+                  '清空'
+                )}
+              </Button>
+              <Button
+                onClick={handleSaveCodexFallback}
+                disabled={isCodexFallbackSaving || isCodexFallbackClearing || isCodexFallbackLoading}
+              >
+                {isCodexFallbackSaving ? (
+                  <>
+                    <MorphingSquare className="size-4 mr-2" />
+                    保存中...
+                  </>
+                ) : (
+                  '保存'
+                )}
+              </Button>
             </div>
           </CardContent>
         </Card>
