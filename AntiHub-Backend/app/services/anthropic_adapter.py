@@ -110,16 +110,63 @@ class AnthropicAdapter:
             openai_request["stop"] = request.stop_sequences
         
         # 转换工具
-        if request.tools:
-            openai_request["tools"] = cls._convert_anthropic_tools_to_openai(request.tools)
+        tools = request.tools
+        tool_choice = request.tool_choice
+        if tools:
+            tools, tool_choice = cls._strip_builtin_web_search_when_mixed(tools, tool_choice)
+            if tools:
+                openai_request["tools"] = cls._convert_anthropic_tools_to_openai(tools)
         
         # 转换工具选择
-        if request.tool_choice:
-            openai_request["tool_choice"] = cls._convert_anthropic_tool_choice_to_openai(
-                request.tool_choice
-            )
+        if tool_choice:
+            openai_request["tool_choice"] = cls._convert_anthropic_tool_choice_to_openai(tool_choice)
         
         return openai_request
+
+    @classmethod
+    def _strip_builtin_web_search_when_mixed(
+        cls,
+        tools: List[Any],
+        tool_choice: Any = None,
+    ) -> Tuple[List[Any], Any]:
+        """
+        Claude/Anthropic 的内置联网工具通常以 name="web_search" 形式出现在 tools 中。
+
+        约定：当 tools 同时包含其它工具时，移除 web_search，避免“误触发联网/上游不支持”的问题。
+        """
+        if len(tools) < 2:
+            return tools, tool_choice
+
+        normalized_names: List[str] = []
+        for tool in tools:
+            name = getattr(tool, "name", None)
+            if name is None and isinstance(tool, dict):
+                name = tool.get("name")
+            normalized_names.append(str(name or "").strip().lower())
+
+        has_web_search = any(n == "web_search" for n in normalized_names)
+        has_other = any(n and n != "web_search" for n in normalized_names)
+        if not (has_web_search and has_other):
+            return tools, tool_choice
+
+        kept = [t for t, n in zip(tools, normalized_names) if n != "web_search"]
+
+        # 如果 tool_choice 显式指定了 web_search，则降级为 auto，避免引用不存在的 tool。
+        choice_type: Optional[str] = None
+        choice_name: Optional[str] = None
+        if isinstance(tool_choice, dict):
+            choice_type = str(tool_choice.get("type") or "").strip()
+            choice_name = str(tool_choice.get("name") or "").strip()
+        else:
+            if tool_choice is not None:
+                choice_type = str(getattr(tool_choice, "type", "") or "").strip()
+                choice_name = str(getattr(tool_choice, "name", "") or "").strip()
+
+        if choice_type == "tool" and choice_name.lower() == "web_search":
+            tool_choice = {"type": "auto"}
+
+        logger.info("检测到 mixed tools，已移除内置 web_search（保留 %d 个工具）", len(kept))
+        return kept, tool_choice
     
     @classmethod
     def _get_block_type(cls, block: Any) -> Optional[str]:

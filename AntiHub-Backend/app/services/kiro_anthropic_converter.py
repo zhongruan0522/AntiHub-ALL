@@ -211,6 +211,14 @@ class KiroAnthropicConverter:
         if not tools:
             return []
 
+        if len(tools) > 1:
+            normalized_names = [str(getattr(t, "name", "") or "").strip().lower() for t in tools]
+            has_web_search = any(n == "web_search" for n in normalized_names)
+            has_other = any(n and n != "web_search" for n in normalized_names)
+            if has_web_search and has_other:
+                tools = [t for t, n in zip(tools, normalized_names) if n != "web_search"]
+                logger.info("检测到 mixed tools，已移除内置 web_search（保留 %d 个工具）", len(tools))
+
         out: List[Dict[str, Any]] = []
         for t in tools:
             name = str(getattr(t, "name", "") or "").strip()
