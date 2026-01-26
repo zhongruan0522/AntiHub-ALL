@@ -841,7 +841,7 @@ export interface PluginAPIKey {
   user_id: number;
   key_preview: string;
   name: string;
-  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli'; // 配置类型
+  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts'; // 配置类型
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -853,7 +853,7 @@ export interface CreateAPIKeyResponse {
   user_id: number;
   key: string;
   name: string;
-  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli'; // 配置类型
+  config_type: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts'; // 配置类型
   is_active: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -884,7 +884,7 @@ export async function getAPIKeyInfo(): Promise<PluginAPIKey | null> {
  */
 export async function generateAPIKey(
   name: string = 'My API Key',
-  configType: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' = 'antigravity'
+  configType: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' = 'antigravity'
 ): Promise<CreateAPIKeyResponse> {
   return fetchWithAuth<CreateAPIKeyResponse>(
     `${API_BASE_URL}/api/api-keys`,

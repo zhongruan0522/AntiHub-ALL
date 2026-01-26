@@ -174,11 +174,28 @@ class ZaiTTSService:
     async def delete_account(self, user_id: int, account_id: int) -> bool:
         return await self.repo.delete(account_id, user_id)
 
-    async def select_active_account(self, user_id: int):
+    async def select_active_account(self, user_id: int, *, voice_id: Optional[str] = None):
         enabled = await self.repo.list_enabled_by_user_id(user_id)
         if not enabled:
             raise ValueError("没有可用的 ZAI TTS 账号，请先添加账号")
-        return enabled[0]
+
+        wanted = _safe_str(voice_id)
+        if not wanted:
+            return enabled[0]
+
+        for account in enabled:
+            if _safe_str(getattr(account, "voice_id", None)) == wanted:
+                return account
+
+        allowed = sorted(
+            {
+                _safe_str(getattr(a, "voice_id", None))
+                for a in enabled
+                if _safe_str(getattr(a, "voice_id", None))
+            }
+        )
+        allowed_text = ", ".join(allowed) if allowed else "-"
+        raise PermissionError(f"音色ID无权限或不存在：{wanted}（允许：{allowed_text}）")
 
     def _load_token(self, account) -> str:
         raw = decrypt_secret(account.credentials)

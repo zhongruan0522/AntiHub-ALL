@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class APIKeyCreate(BaseModel):
     """创建API密钥请求"""
     name: Optional[str] = Field(None, description="密钥名称，方便识别")
-    config_type: str = Field("antigravity", description="配置类型：antigravity / kiro / qwen / codex / gemini-cli")
+    config_type: str = Field("antigravity", description="配置类型：antigravity / kiro / qwen / codex / gemini-cli / zai-tts")
 
 
 class APIKeyResponse(BaseModel):
@@ -18,7 +18,7 @@ class APIKeyResponse(BaseModel):
     user_id: int
     key: str = Field(..., description="API密钥")
     name: Optional[str] = None
-    config_type: str = Field(..., description="配置类型：antigravity / kiro / qwen / codex / gemini-cli")
+    config_type: str = Field(..., description="配置类型：antigravity / kiro / qwen / codex / gemini-cli / zai-tts")
     is_active: bool
     created_at: datetime
     last_used_at: Optional[datetime] = None
@@ -33,7 +33,7 @@ class APIKeyListResponse(BaseModel):
     user_id: int
     key_preview: str = Field(..., description="密钥预览（前8位）")
     name: Optional[str] = None
-    config_type: str = Field(..., description="配置类型：antigravity / kiro / qwen / codex / gemini-cli")
+    config_type: str = Field(..., description="配置类型：antigravity / kiro / qwen / codex / gemini-cli / zai-tts")
     is_active: bool
     created_at: datetime
     last_used_at: Optional[datetime] = None

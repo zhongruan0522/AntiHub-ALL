@@ -217,11 +217,14 @@ async def audio_speech(
     stream = bool(request_json.get("stream"))
     model_name = str(request_json.get("model") or "").strip() or "zai-tts"
 
-    account = await zai_tts_service.select_active_account(current_user.id)
-    if not voice_id:
-        voice_id = account.voice_id or "system_001"
-
-    async def _record_usage(success: bool, status_code: Optional[int], error_message: Optional[str] = None):
+    async def _record_usage(
+        success: bool,
+        status_code: Optional[int],
+        error_message: Optional[str] = None,
+        *,
+        tts_voice_id: Optional[str] = None,
+        tts_account_id: Optional[str] = None,
+    ):
         duration_ms = int((time.monotonic() - start_time) * 1000)
         await UsageLogService.record(
             user_id=current_user.id,
@@ -235,21 +238,33 @@ async def audio_speech(
             status_code=status_code,
             error_message=error_message,
             duration_ms=duration_ms,
-            tts_voice_id=voice_id,
-            tts_account_id=account.zai_user_id,
+            tts_voice_id=tts_voice_id,
+            tts_account_id=tts_account_id,
         )
+
+    # 选择账号：voice 必须匹配已保存的音色ID，否则拒绝（403）
+    try:
+        account = await zai_tts_service.select_active_account(current_user.id, voice_id=voice_id or None)
+    except PermissionError as e:
+        await _record_usage(False, status.HTTP_403_FORBIDDEN, str(e), tts_voice_id=voice_id or None, tts_account_id=None)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        await _record_usage(False, status.HTTP_400_BAD_REQUEST, str(e), tts_voice_id=voice_id or None, tts_account_id=None)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    resolved_voice_id = voice_id or (account.voice_id or "system_001")
 
     if stream:
         try:
             audio_generator, _, _ = await zai_tts_service.stream_audio(
                 account=account,
                 input_text=input_text,
-                voice_id=voice_id,
+                voice_id=resolved_voice_id,
                 speed=float(speed),
                 volume=int(float(volume)),
             )
         except Exception as e:
-            await _record_usage(False, 500, str(e))
+            await _record_usage(False, 500, str(e), tts_voice_id=resolved_voice_id, tts_account_id=account.zai_user_id)
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
         async def generate():
@@ -266,7 +281,13 @@ async def audio_speech(
                 logger.error("zai-tts stream failed: user_id=%s error=%s", current_user.id, str(e))
                 raise
             finally:
-                await _record_usage(success, status_code, error_message)
+                await _record_usage(
+                    success,
+                    status_code,
+                    error_message,
+                    tts_voice_id=resolved_voice_id,
+                    tts_account_id=account.zai_user_id,
+                )
 
         return StreamingResponse(generate(), media_type="audio/wav")
 
@@ -274,18 +295,18 @@ async def audio_speech(
         filepath = await zai_tts_service.generate_file(
             account=account,
             input_text=input_text,
-            voice_id=voice_id,
+            voice_id=resolved_voice_id,
             speed=float(speed),
             volume=int(float(volume)),
         )
-        await _record_usage(True, 200, None)
+        await _record_usage(True, 200, None, tts_voice_id=resolved_voice_id, tts_account_id=account.zai_user_id)
         return FileResponse(
             filepath,
             media_type="audio/wav",
             filename=os.path.basename(filepath),
         )
     except Exception as e:
-        await _record_usage(False, 500, str(e))
+        await _record_usage(False, 500, str(e), tts_voice_id=resolved_voice_id, tts_account_id=account.zai_user_id)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
