@@ -76,6 +76,7 @@ def _responses_sse_error(
 LOCAL_IMAGE_MODEL_ID = "glm-image"
 LOCAL_IMAGE_MODEL_ALIASES: List[str] = [
     "gemini-3-pro-image-preview",
+    "gemini-3-pro-image",
 ]
 LOCAL_IMAGE_MODEL_IDS: List[str] = [LOCAL_IMAGE_MODEL_ID, *LOCAL_IMAGE_MODEL_ALIASES]
 

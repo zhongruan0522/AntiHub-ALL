@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1beta", tags=["Gemini兼容API"])
 
+LOCAL_IMAGE_MODELS = (
+    "glm-image",
+    "gemini-3-pro-image-preview",
+    "gemini-3-pro-image",
+)
+
 class GeminiSSEUsageTracker:
     def __init__(self) -> None:
         self.buffer = ""
@@ -148,7 +154,7 @@ async def generate_content(
     effective_config_type = config_type or "antigravity"
 
     try:
-        if model in ("glm-image", "gemini-3-pro-image-preview"):
+        if model in LOCAL_IMAGE_MODELS:
             async def generate():
                 success = True
                 status_code = 200
@@ -270,6 +276,93 @@ async def generate_content(
             return result
         
         # 使用流式请求以支持SSE心跳保活
+        if model in LOCAL_IMAGE_MODELS:
+
+            async def generate_local():
+                success = True
+                status_code = 200
+                error_message = None
+                quota_consumed = 1.0
+
+                try:
+                    prompt = _extract_gemini_text_prompt(request)
+                    if not prompt:
+                        raise ValueError("prompt is required")
+
+                    image_cfg = None
+                    if request.generationConfig and request.generationConfig.imageConfig:
+                        image_cfg = request.generationConfig.imageConfig
+
+                    ratio = getattr(image_cfg, "aspectRatio", None) if image_cfg else None
+                    resolution = getattr(image_cfg, "imageSize", None) if image_cfg else None
+
+                    account = await zai_image_service.select_active_account(current_user.id)
+                    info = await zai_image_service.generate_image(
+                        account=account,
+                        prompt=prompt,
+                        ratio=ratio,
+                        resolution=resolution,
+                        rm_label_watermark=True,
+                    )
+                    b64, mime = await zai_image_service.fetch_image_base64(info["image_url"])
+
+                    payload = {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "role": "model",
+                                    "parts": [
+                                        {"inlineData": {"mimeType": mime, "data": b64}},
+                                        {"text": info["image_url"]},
+                                    ],
+                                },
+                                "finishReason": "STOP",
+                            }
+                        ]
+                    }
+                    yield f"event: result\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                except ValueError as e:
+                    success = False
+                    status_code = status.HTTP_400_BAD_REQUEST
+                    error_message = str(e)
+                    error_payload = {"error": {"message": error_message, "code": status_code}}
+                    yield f"event: error\ndata: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    success = False
+                    status_code = int(getattr(e, "status_code", None) or 500)
+                    error_message = str(getattr(e, "detail", None) or e)
+                    error_payload = {"error": {"message": error_message, "code": status_code}}
+                    yield f"event: error\ndata: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                finally:
+                    duration_ms = int((time.monotonic() - start_time) * 1000)
+                    await UsageLogService.record(
+                        user_id=current_user.id,
+                        api_key_id=api_key_id,
+                        endpoint=endpoint,
+                        method=method,
+                        model_name="glm-image",
+                        config_type="zai-image",
+                        stream=True,
+                        quota_consumed=quota_consumed if success else 0.0,
+                        input_tokens=0,
+                        output_tokens=0,
+                        total_tokens=0,
+                        success=success,
+                        status_code=status_code,
+                        error_message=error_message,
+                        duration_ms=duration_ms,
+                    )
+
+            return StreamingResponse(
+                generate_local(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
         tracker = SSEUsageTracker()
 
         async def generate():
@@ -402,6 +495,7 @@ async def stream_generate_content(
     current_user: User = Depends(get_user_flexible_with_goog_api_key),
     service: PluginAPIService = Depends(get_plugin_api_service),
     gemini_cli_service: GeminiCLIAPIService = Depends(get_gemini_cli_api_service),
+    zai_image_service: ZaiImageService = Depends(get_zai_image_service),
 ):
     start_time = time.monotonic()
     endpoint = raw_request.url.path
@@ -464,6 +558,93 @@ async def stream_generate_content(
             )
         
         # 使用流式请求以支持SSE心跳保活
+        if model in LOCAL_IMAGE_MODELS:
+
+            async def generate_local():
+                success = True
+                status_code = 200
+                error_message = None
+                quota_consumed = 1.0
+
+                try:
+                    prompt = _extract_gemini_text_prompt(request)
+                    if not prompt:
+                        raise ValueError("prompt is required")
+
+                    image_cfg = None
+                    if request.generationConfig and request.generationConfig.imageConfig:
+                        image_cfg = request.generationConfig.imageConfig
+
+                    ratio = getattr(image_cfg, "aspectRatio", None) if image_cfg else None
+                    resolution = getattr(image_cfg, "imageSize", None) if image_cfg else None
+
+                    account = await zai_image_service.select_active_account(current_user.id)
+                    info = await zai_image_service.generate_image(
+                        account=account,
+                        prompt=prompt,
+                        ratio=ratio,
+                        resolution=resolution,
+                        rm_label_watermark=True,
+                    )
+                    b64, mime = await zai_image_service.fetch_image_base64(info["image_url"])
+
+                    payload = {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "role": "model",
+                                    "parts": [
+                                        {"inlineData": {"mimeType": mime, "data": b64}},
+                                        {"text": info["image_url"]},
+                                    ],
+                                },
+                                "finishReason": "STOP",
+                            }
+                        ]
+                    }
+                    yield f"event: result\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                except ValueError as e:
+                    success = False
+                    status_code = status.HTTP_400_BAD_REQUEST
+                    error_message = str(e)
+                    error_payload = {"error": {"message": error_message, "code": status_code}}
+                    yield f"event: error\ndata: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    success = False
+                    status_code = int(getattr(e, "status_code", None) or 500)
+                    error_message = str(getattr(e, "detail", None) or e)
+                    error_payload = {"error": {"message": error_message, "code": status_code}}
+                    yield f"event: error\ndata: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                finally:
+                    duration_ms = int((time.monotonic() - start_time) * 1000)
+                    await UsageLogService.record(
+                        user_id=current_user.id,
+                        api_key_id=api_key_id,
+                        endpoint=endpoint,
+                        method=method,
+                        model_name="glm-image",
+                        config_type="zai-image",
+                        stream=True,
+                        quota_consumed=quota_consumed if success else 0.0,
+                        input_tokens=0,
+                        output_tokens=0,
+                        total_tokens=0,
+                        success=success,
+                        status_code=status_code,
+                        error_message=error_message,
+                        duration_ms=duration_ms,
+                    )
+
+            return StreamingResponse(
+                generate_local(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
         tracker = SSEUsageTracker()
 
         async def generate():
