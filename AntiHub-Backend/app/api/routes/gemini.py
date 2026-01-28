@@ -151,10 +151,21 @@ async def generate_content(
 
     # 获取 config_type（通过 API key 认证时会设置）
     config_type = getattr(current_user, "_config_type", None)
+    if config_type is None:
+        api_type = raw_request.headers.get("X-Api-Type")
+        if api_type in ["kiro", "antigravity", "qwen", "codex", "gemini-cli", "zai-image", "zai-tts"]:
+            config_type = api_type
     effective_config_type = config_type or "antigravity"
+    if effective_config_type == "zai-tts":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type does not support gemini")
+    if effective_config_type == "zai-image" and model not in LOCAL_IMAGE_MODELS:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="zai-image key only supports local image models")
 
     try:
         if model in LOCAL_IMAGE_MODELS:
+            if effective_config_type != "zai-image":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type must be zai-image")
+
             async def generate():
                 success = True
                 status_code = 200
@@ -277,6 +288,8 @@ async def generate_content(
         
         # 使用流式请求以支持SSE心跳保活
         if model in LOCAL_IMAGE_MODELS:
+            if effective_config_type != "zai-image":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type must be zai-image")
 
             async def generate_local():
                 success = True
@@ -503,7 +516,15 @@ async def stream_generate_content(
     api_key_id = getattr(current_user, "_api_key_id", None)
 
     config_type = getattr(current_user, "_config_type", None)
+    if config_type is None:
+        api_type = raw_request.headers.get("X-Api-Type")
+        if api_type in ["kiro", "antigravity", "qwen", "codex", "gemini-cli", "zai-image", "zai-tts"]:
+            config_type = api_type
     effective_config_type = config_type or "antigravity"
+    if effective_config_type == "zai-tts":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type does not support gemini")
+    if effective_config_type == "zai-image" and model not in LOCAL_IMAGE_MODELS:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="zai-image key only supports local image models")
 
     try:
         # 获取 config_type（通过 API key 认证时会设置）
@@ -559,6 +580,8 @@ async def stream_generate_content(
         
         # 使用流式请求以支持SSE心跳保活
         if model in LOCAL_IMAGE_MODELS:
+            if effective_config_type != "zai-image":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type must be zai-image")
 
             async def generate_local():
                 success = True

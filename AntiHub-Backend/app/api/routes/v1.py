@@ -95,7 +95,7 @@ def _is_local_tts_model(model: Any) -> bool:
     return str(model or "").strip() in LOCAL_TTS_MODEL_IDS
 
 
-def _inject_local_models(payload: Any) -> Any:
+def _inject_local_models(payload: Any, *, config_type: Optional[str] = None) -> Any:
     """
     在 OpenAI /v1/models 的返回里追加本地虚拟模型（例如 glm-image）。
     只在 payload 符合 OpenAI models list 格式时注入。
@@ -106,6 +106,14 @@ def _inject_local_models(payload: Any) -> Any:
     if not isinstance(data, list):
         return payload
 
+    local_model_ids: List[str] = []
+    if config_type == "zai-image":
+        local_model_ids = LOCAL_IMAGE_MODEL_IDS
+    elif config_type == "zai-tts":
+        local_model_ids = LOCAL_TTS_MODEL_IDS
+    else:
+        return payload
+
     existing_ids = {
         str(item.get("id") or "").strip()
         for item in data
@@ -113,7 +121,7 @@ def _inject_local_models(payload: Any) -> Any:
     }
 
     now_ts = int(time.time())
-    for model_id in [*LOCAL_IMAGE_MODEL_IDS, *LOCAL_TTS_MODEL_IDS]:
+    for model_id in local_model_ids:
         if model_id in existing_ids:
             continue
         data.append(
@@ -289,7 +297,7 @@ async def list_models(
         # 如果是JWT token认证（无_config_type），检查请求头
         if config_type is None:
             api_type = request.headers.get("X-Api-Type")
-            if api_type in ["kiro", "antigravity", "qwen", "codex", "gemini-cli"]:
+            if api_type in ["kiro", "antigravity", "qwen", "codex", "gemini-cli", "zai-image", "zai-tts"]:
                 config_type = api_type
         
         use_kiro = config_type == "kiro"
@@ -314,7 +322,7 @@ async def list_models(
             # 默认使用Antigravity，传递config_type
             result = await antigravity_service.get_models(current_user.id, config_type=config_type)
         
-        return _inject_local_models(result)
+        return _inject_local_models(result, config_type=config_type)
     except HTTPException:
         raise
     except UpstreamAPIError as e:
@@ -380,6 +388,16 @@ async def audio_speech(
     volume = request_json.get("volume", 1)
     stream = bool(request_json.get("stream"))
     model_name = str(request_json.get("model") or "").strip() or LOCAL_TTS_MODEL_ID
+
+    config_type = getattr(current_user, "_config_type", None)
+    if config_type is None:
+        api_type = raw_request.headers.get("X-Api-Type")
+        if api_type == "zai-tts":
+            config_type = api_type
+
+    effective_config_type = config_type or "antigravity"
+    if effective_config_type != "zai-tts":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type must be zai-tts")
 
     async def _record_usage(
         success: bool,
@@ -515,6 +533,17 @@ async def image_generations(
             duration_ms=duration_ms,
         )
 
+    config_type = getattr(current_user, "_config_type", None)
+    if config_type is None:
+        api_type = raw_request.headers.get("X-Api-Type")
+        if api_type == "zai-image":
+            config_type = api_type
+
+    effective_config_type = config_type or "antigravity"
+    if effective_config_type != "zai-image":
+        await _record_usage(False, status.HTTP_403_FORBIDDEN, "config_type must be zai-image")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type must be zai-image")
+
     try:
         request_json = await raw_request.json()
     except Exception:
@@ -636,6 +665,8 @@ async def responses(
             config_type = api_type
 
     effective_config_type = config_type or "antigravity"
+    if effective_config_type in ("zai-image", "zai-tts"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type does not support responses")
     use_kiro = effective_config_type == "kiro"
     use_codex = effective_config_type == "codex"
 
@@ -1061,7 +1092,21 @@ async def chat_completions(
     api_key_id = getattr(current_user, "_api_key_id", None)
     model_name = getattr(request, "model", None)
 
+    config_type = getattr(current_user, "_config_type", None)
+    if config_type is None:
+        api_type = raw_request.headers.get("X-Api-Type")
+        if api_type in ["kiro", "antigravity", "qwen", "codex", "gemini-cli", "zai-image", "zai-tts"]:
+            config_type = api_type
+
+    effective_config_type = config_type or "antigravity"
+    use_kiro = effective_config_type == "kiro"
+    use_codex = effective_config_type == "codex"
+    use_gemini_cli = effective_config_type == "gemini-cli"
+
     if _is_local_image_model(model_name):
+        if effective_config_type != "zai-image":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type must be zai-image")
+
         request_data = request.model_dump()
 
         try:
@@ -1242,16 +1287,8 @@ async def chat_completions(
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     # 判断使用哪个服务
-    config_type = getattr(current_user, "_config_type", None)
-    if config_type is None:
-        api_type = raw_request.headers.get("X-Api-Type")
-        if api_type in ["kiro", "antigravity", "qwen", "codex", "gemini-cli"]:
-            config_type = api_type
-
-    effective_config_type = config_type or "antigravity"
-    use_kiro = effective_config_type == "kiro"
-    use_codex = effective_config_type == "codex"
-    use_gemini_cli = effective_config_type == "gemini-cli"
+    if effective_config_type in ("zai-image", "zai-tts"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="config_type does not support chat completions")
 
     try:
         if use_codex:
