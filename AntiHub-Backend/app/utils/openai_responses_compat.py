@@ -48,6 +48,44 @@ def responses_request_to_chat_completions_request(request_data: Dict[str, Any]) 
     return out
 
 
+def chat_completions_request_to_responses_request(request_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    把 OpenAI `/v1/chat/completions` 的 request，转换为 `/v1/responses` 可用的 request。
+
+    目标是「够用」：支撑 Codex 的 ChatCompletions 兼容层（Chat -> Responses）。
+    """
+    if not isinstance(request_data, dict):
+        raise ValueError("request_data 必须是 JSON object")
+
+    out: Dict[str, Any] = {
+        "model": request_data.get("model"),
+        "stream": bool(request_data.get("stream", False)),
+    }
+
+    instructions, input_items = _chat_messages_to_responses_input(request_data.get("messages"))
+    if instructions:
+        out["instructions"] = instructions
+    out["input"] = input_items
+
+    if "temperature" in request_data:
+        out["temperature"] = request_data.get("temperature")
+    if "top_p" in request_data:
+        out["top_p"] = request_data.get("top_p")
+    if "max_tokens" in request_data and request_data.get("max_tokens") is not None:
+        out["max_output_tokens"] = request_data.get("max_tokens")
+
+    if "tools" in request_data:
+        out["tools"] = request_data.get("tools")
+    if "tool_choice" in request_data:
+        out["tool_choice"] = request_data.get("tool_choice")
+
+    for k in ("user", "metadata", "response_format", "seed", "reasoning_effort", "stream_options"):
+        if k in request_data and k not in out:
+            out[k] = request_data.get(k)
+
+    return out
+
+
 def chat_completions_response_to_responses_response(
     chat_resp: Dict[str, Any], *, original_request: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
@@ -111,6 +149,48 @@ def chat_completions_response_to_responses_response(
             out["tools"] = original_request.get("tools")
         if original_request.get("tool_choice") is not None:
             out["tool_choice"] = original_request.get("tool_choice")
+
+    return out
+
+
+def responses_response_to_chat_completions_response(
+    resp_obj: Dict[str, Any], *, original_request: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    把 OpenAI `/v1/responses` 的响应（response object），转换为 `/v1/chat/completions` 的响应。
+    """
+    if not isinstance(resp_obj, dict):
+        raise ValueError("resp_obj 必须是 JSON object")
+
+    resp_id = str(resp_obj.get("id") or "").strip()
+    created = int(resp_obj.get("created_at") or 0) or int(time.time())
+    model = str(resp_obj.get("model") or "").strip() or str((original_request or {}).get("model") or "").strip()
+
+    completion_id = resp_id if resp_id.startswith("chatcmpl_") else f"chatcmpl_{resp_id}" if resp_id else f"chatcmpl_{uuid4().hex}"
+
+    assistant_text = _extract_response_text(resp_obj)
+
+    out: Dict[str, Any] = {
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": assistant_text},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+
+    usage = resp_obj.get("usage")
+    if isinstance(usage, dict):
+        out["usage"] = {
+            "prompt_tokens": int(usage.get("input_tokens") or 0),
+            "completion_tokens": int(usage.get("output_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        }
 
     return out
 
@@ -515,6 +595,168 @@ class ChatCompletionsToResponsesSSETranslator:
         return out
 
 
+@dataclass
+class ResponsesToChatCompletionsSSETranslator:
+    """
+    把 Responses SSE（event: response.*）转换为 ChatCompletions SSE（data: {...} / data: [DONE]）。
+
+    兼容范围（先别过度设计）：
+    - 文本增量：response.output_text.delta -> chat.completion.chunk delta.content
+    - 收尾：response.completed -> finish_reason=stop + [DONE]
+    """
+
+    original_request: Dict[str, Any]
+
+    _buffer: bytes = b""
+    _done: bool = False
+    _error_emitted: bool = False
+    _role_emitted: bool = False
+
+    _completion_id: str = ""
+    _created: int = 0
+    _model: str = ""
+
+    def feed(self, raw: bytes) -> Tuple[List[bytes], bool]:
+        if self._done or self._error_emitted:
+            return ([], True)
+
+        self._buffer += raw or b""
+        out: List[bytes] = []
+
+        while b"\n\n" in self._buffer:
+            block, self._buffer = self._buffer.split(b"\n\n", 1)
+            out.extend(self._handle_sse_block(block))
+            if self._done or self._error_emitted:
+                return (out, True)
+
+        return (out, self._done or self._error_emitted)
+
+    def finalize(self) -> List[bytes]:
+        if self._done or self._error_emitted:
+            return []
+        self._done = True
+        return [self._build_final_chunk(), self._emit_done()]
+
+    def _ensure_ids(self) -> None:
+        if self._completion_id:
+            return
+        self._created = int(time.time())
+        self._model = str((self.original_request or {}).get("model") or "").strip()
+        self._completion_id = f"chatcmpl_{uuid4().hex}"
+
+    def _emit_chat(self, payload: Dict[str, Any]) -> bytes:
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return f"data: {data}\n\n".encode("utf-8")
+
+    def _emit_done(self) -> bytes:
+        return b"data: [DONE]\n\n"
+
+    def _build_delta_chunk(self, delta_text: str) -> bytes:
+        self._ensure_ids()
+        delta: Dict[str, Any] = {"content": delta_text}
+        if not self._role_emitted:
+            delta["role"] = "assistant"
+            self._role_emitted = True
+        chunk = {
+            "id": self._completion_id,
+            "object": "chat.completion.chunk",
+            "created": self._created,
+            "model": self._model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+        }
+        return self._emit_chat(chunk)
+
+    def _build_final_chunk(self) -> bytes:
+        self._ensure_ids()
+        chunk = {
+            "id": self._completion_id,
+            "object": "chat.completion.chunk",
+            "created": self._created,
+            "model": self._model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        return self._emit_chat(chunk)
+
+    def _build_error_chunk(self, message: str, *, code: Optional[int] = None) -> bytes:
+        payload: Dict[str, Any] = {"error": {"message": message}}
+        if code is not None:
+            payload["error"]["code"] = int(code)
+        return self._emit_chat(payload)
+
+    def _handle_sse_block(self, block: bytes) -> List[bytes]:
+        if self._done or self._error_emitted:
+            return []
+
+        event_name = ""
+        data_lines: List[bytes] = []
+
+        for raw_line in (block or b"").split(b"\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(b"event:"):
+                try:
+                    event_name = line[len(b"event:") :].strip().decode("utf-8", errors="replace")
+                except Exception:
+                    event_name = ""
+            elif line.startswith(b"data:"):
+                data_lines.append(line[len(b"data:") :].strip())
+
+        if not data_lines:
+            return []
+
+        try:
+            data_str = b"\n".join(data_lines).decode("utf-8", errors="replace").strip()
+        except Exception:
+            return []
+
+        if data_str == "[DONE]":
+            self._done = True
+            return [self._build_final_chunk(), self._emit_done()]
+
+        try:
+            payload = json.loads(data_str) if data_str else None
+        except Exception:
+            return []
+
+        if not isinstance(payload, dict):
+            return []
+
+        typ = event_name.strip() or str(payload.get("type") or "").strip()
+
+        # error（兼容 Responses: response.error）
+        err = None
+        if "error" in payload and payload.get("error") is not None:
+            err = payload.get("error")
+        else:
+            response_obj = payload.get("response")
+            if isinstance(response_obj, dict) and response_obj.get("error") is not None:
+                err = response_obj.get("error")
+
+        if err is not None or typ == "error" or typ.endswith(".error"):
+            self._error_emitted = True
+            msg = str(err.get("message") or err.get("detail") or err) if isinstance(err, dict) else str(err or "error")
+            code = None
+            if isinstance(err, dict):
+                try:
+                    code = int(err.get("code") or err.get("status") or err.get("status_code") or 500)
+                except Exception:
+                    code = 500
+            return [self._build_error_chunk(msg, code=code), self._emit_done()]
+
+        if typ == "response.output_text.delta":
+            delta = payload.get("delta")
+            if isinstance(delta, str) and delta:
+                return [self._build_delta_chunk(delta)]
+            return []
+
+        if typ == "response.completed":
+            self._done = True
+            return [self._build_final_chunk(), self._emit_done()]
+
+        return []
+
+
 def _responses_input_to_chat_messages(input_value: Any) -> List[Dict[str, Any]]:
     if input_value is None:
         return []
@@ -583,6 +825,134 @@ def _responses_message_content_to_chat_content(content: Any) -> Optional[Any]:
             return "\n".join(text_buf)
 
     return None
+
+
+def _chat_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        buf: List[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text" and isinstance(part.get("text"), str):
+                buf.append(part["text"])
+        return "".join(buf).strip()
+    return ""
+
+
+def _chat_content_to_responses_content(content: Any, *, role: str) -> List[Dict[str, Any]]:
+    text_type = "input_text" if role in ("user", "system") else "output_text"
+    out: List[Dict[str, Any]] = []
+
+    if isinstance(content, str):
+        text = content.strip()
+        if text:
+            out.append({"type": text_type, "text": text})
+        return out
+
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            t = str(part.get("type") or "").strip()
+            if t == "text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    text = text.strip()
+                if text:
+                    out.append({"type": text_type, "text": text})
+            elif t == "image_url":
+                image_url = part.get("image_url")
+                url = None
+                if isinstance(image_url, dict):
+                    url = image_url.get("url")
+                elif isinstance(image_url, str):
+                    url = image_url
+                if isinstance(url, str):
+                    url = url.strip()
+                if url:
+                    out.append({"type": "input_image", "image_url": url})
+
+    return out
+
+
+def _chat_messages_to_responses_input(messages: Any) -> Tuple[str, List[Dict[str, Any]]]:
+    if not isinstance(messages, list):
+        return ("", [])
+
+    instructions_buf: List[str] = []
+    input_items: List[Dict[str, Any]] = []
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+
+        role = _normalize_role(str(msg.get("role") or "user"))
+
+        if role == "system":
+            text = _chat_content_to_text(msg.get("content"))
+            if text:
+                instructions_buf.append(text)
+            continue
+
+        if role == "tool":
+            call_id = str(msg.get("tool_call_id") or "").strip()
+            output = msg.get("content")
+            if isinstance(output, str):
+                output_str = output
+            elif output is None:
+                output_str = ""
+            else:
+                try:
+                    output_str = json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+                except Exception:
+                    output_str = str(output)
+            input_items.append({"type": "function_call_output", "call_id": call_id, "output": output_str})
+            continue
+
+        content = _chat_content_to_responses_content(msg.get("content"), role=role)
+        if not content:
+            continue
+        input_items.append({"type": "message", "role": role, "content": content})
+
+    instructions = "\n\n".join([s for s in instructions_buf if s.strip()])
+    return (instructions, input_items)
+
+
+def _extract_response_text(resp_obj: Dict[str, Any]) -> str:
+    try:
+        output = resp_obj.get("output") or []
+        if not isinstance(output, list) or not output:
+            return ""
+
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").strip() != "message":
+                continue
+            if str(item.get("role") or "").strip() != "assistant":
+                continue
+
+            content = item.get("content") or []
+            if isinstance(content, str):
+                return content
+            if not isinstance(content, list):
+                continue
+
+            buf: List[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if str(part.get("type") or "").strip() not in ("output_text", "text"):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    buf.append(text)
+            return "".join(buf)
+    except Exception:
+        return ""
+    return ""
 
 
 def _extract_chat_completion_text(chat_resp: Dict[str, Any]) -> str:
