@@ -82,11 +82,11 @@ BEGIN
   -- 获取用户有效的共享cookie数量
   v_cookie_count := get_user_shared_cookie_count(p_user_id);
   
-  -- 计算新的上限�? * n
+  -- 计算新的上限?? * n
   v_new_max := 2.0 * v_cookie_count;
   
   -- 更新或插入配额池记录
-  -- 只更�?max_quota，不更新 quota
+  -- 只更??max_quota，不更新 quota
   INSERT INTO user_shared_quota_pool (user_id, model_name, quota, max_quota)
   VALUES (p_user_id::UUID, p_model_name, v_new_max, v_new_max)
   ON CONFLICT (user_id, model_name)
@@ -103,7 +103,7 @@ $$;
 -- Name: FUNCTION update_user_shared_quota_max(p_user_id character varying, p_model_name character varying); Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON FUNCTION public.update_user_shared_quota_max(p_user_id character varying, p_model_name character varying) IS '更新用户共享配额池的 max_quota（基于用户共享账号数量计算）。此函数主要用于 scripts/update-user-quotas.js 脚本同步配额。添�?删除账号时的 quota 更新�?JavaScript 代码处理�?;
+COMMENT ON FUNCTION public.update_user_shared_quota_max(p_user_id character varying, p_model_name character varying) IS '更新用户共享配额池的 max_quota（基于用户共享账号数量计算）。此函数主要用于 scripts/update-user-quotas.js 脚本同步配额。添??删除账号时的 quota 更新??JavaScript 代码处理??';
 
 
 SET default_tablespace = '';
@@ -140,7 +140,7 @@ CREATE TABLE public.accounts (
 -- Name: TABLE accounts; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.accounts IS '用户账号�?;
+COMMENT ON TABLE public.accounts IS '用户账号??';
 
 
 --
@@ -189,7 +189,7 @@ COMMENT ON COLUMN public.accounts.expires_at IS '令牌过期时间（时间戳�
 -- Name: COLUMN accounts.status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.status IS '账号状�? 0=禁用, 1=启用';
+COMMENT ON COLUMN public.accounts.status IS '账号状?? 0=禁用, 1=启用';
 
 
 --
@@ -210,14 +210,14 @@ COMMENT ON COLUMN public.accounts.updated_at IS '更新时间';
 -- Name: COLUMN accounts.need_refresh; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.need_refresh IS '是否需要重新刷新token: true=需要用户重新授�? false=正常';
+COMMENT ON COLUMN public.accounts.need_refresh IS '是否需要重新刷新token: true=需要用户重新授?? false=正常';
 
 
 --
 -- Name: COLUMN accounts.name; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.name IS '账号名称（用户自定义�?;
+COMMENT ON COLUMN public.accounts.name IS '账号名称（用户自定义??';
 
 
 --
@@ -231,14 +231,14 @@ COMMENT ON COLUMN public.accounts.email IS '账号邮箱（Google账号邮箱，
 -- Name: COLUMN accounts.project_id_0; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.project_id_0 IS 'Google Cloud项目ID（从API获取�?;
+COMMENT ON COLUMN public.accounts.project_id_0 IS 'Google Cloud项目ID（从API获取??';
 
 
 --
 -- Name: COLUMN accounts.is_restricted; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.is_restricted IS '是否受地区限�? false=不受�? true=受限';
+COMMENT ON COLUMN public.accounts.is_restricted IS '是否受地区限?? false=不受?? true=受限';
 
 
 --
@@ -252,7 +252,7 @@ COMMENT ON COLUMN public.accounts.paid_tier IS '是否付费用户: true=付费,
 -- Name: COLUMN accounts.ineligible; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.ineligible IS '账号是否不合�? false=合格, true=不合�?INELIGIBLE_ACCOUNT)';
+COMMENT ON COLUMN public.accounts.ineligible IS '账号是否不合?? false=合格, true=不合??INELIGIBLE_ACCOUNT)';
 
 
 --
@@ -303,7 +303,7 @@ CREATE TABLE public.kiro_accounts (
 -- Name: TABLE kiro_accounts; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.kiro_accounts IS 'Kiro账号表（独立系统�?;
+COMMENT ON TABLE public.kiro_accounts IS 'Kiro账号表（独立系统??';
 
 
 --
@@ -324,7 +324,7 @@ COMMENT ON COLUMN public.kiro_accounts.user_id IS '用户UUID（外键关联user
 -- Name: COLUMN kiro_accounts.account_name; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.account_name IS '账号名称（用户自定义�?;
+COMMENT ON COLUMN public.kiro_accounts.account_name IS '账号名称（用户自定义??';
 
 
 --
@@ -387,7 +387,7 @@ COMMENT ON COLUMN public.kiro_accounts.machineid IS '机器ID（必填）';
 -- Name: COLUMN kiro_accounts.region; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.region IS 'AWS 区域ID（默�?us-east-1�?;
+COMMENT ON COLUMN public.kiro_accounts.region IS 'AWS 区域ID（默??us-east-1??';
 
 
 --
@@ -422,7 +422,7 @@ COMMENT ON COLUMN public.kiro_accounts.subscription IS '当前订阅（必填）
 -- Name: COLUMN kiro_accounts.current_usage; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.current_usage IS '当前使用量（必填�?;
+COMMENT ON COLUMN public.kiro_accounts.current_usage IS '当前使用量（必填??';
 
 
 --
@@ -436,7 +436,7 @@ COMMENT ON COLUMN public.kiro_accounts.reset_date IS '重置日期（必填）';
 -- Name: COLUMN kiro_accounts.free_trial_status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.free_trial_status IS '免费试用状态（必填�?;
+COMMENT ON COLUMN public.kiro_accounts.free_trial_status IS '免费试用状态（必填??';
 
 
 --
@@ -471,7 +471,7 @@ COMMENT ON COLUMN public.kiro_accounts.usage_limit IS '使用限额（必填）'
 -- Name: COLUMN kiro_accounts.status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.status IS '账号状�? 0=禁用, 1=启用';
+COMMENT ON COLUMN public.kiro_accounts.status IS '账号状?? 0=禁用, 1=启用';
 
 
 --
@@ -492,28 +492,28 @@ COMMENT ON COLUMN public.kiro_accounts.updated_at IS '更新时间';
 -- Name: COLUMN kiro_accounts.need_refresh; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.need_refresh IS '是否需要重新刷新token: true=需要用户重新授�? false=正常';
+COMMENT ON COLUMN public.kiro_accounts.need_refresh IS '是否需要重新刷新token: true=需要用户重新授?? false=正常';
 
 
 --
 -- Name: COLUMN kiro_accounts.bonus_usage; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.bonus_usage IS 'Bonus总使用量（包含免费试用和bonus�?;
+COMMENT ON COLUMN public.kiro_accounts.bonus_usage IS 'Bonus总使用量（包含免费试用和bonus??';
 
 
 --
 -- Name: COLUMN kiro_accounts.bonus_limit; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.bonus_limit IS 'Bonus总限额（包含免费试用和bonus�?;
+COMMENT ON COLUMN public.kiro_accounts.bonus_limit IS 'Bonus总限额（包含免费试用和bonus??';
 
 
 --
 -- Name: COLUMN kiro_accounts.bonus_available; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_accounts.bonus_available IS 'Bonus可用额度（包含免费试用和bonus�?;
+COMMENT ON COLUMN public.kiro_accounts.bonus_available IS 'Bonus可用额度（包含免费试用和bonus??';
 
 
 --
@@ -545,7 +545,7 @@ CREATE TABLE public.kiro_consumption_log (
 -- Name: TABLE kiro_consumption_log; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.kiro_consumption_log IS 'Kiro消费日志表：记录每次对话的credit消�?;
+COMMENT ON TABLE public.kiro_consumption_log IS 'Kiro消费日志表：记录每次对话的credit消??';
 
 
 --
@@ -580,21 +580,21 @@ COMMENT ON COLUMN public.kiro_consumption_log.model_id IS '模型ID';
 -- Name: COLUMN kiro_consumption_log.credit_used; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_consumption_log.credit_used IS '消耗的credit（保�?位小数）';
+COMMENT ON COLUMN public.kiro_consumption_log.credit_used IS '消耗的credit（保??位小数）';
 
 
 --
 -- Name: COLUMN kiro_consumption_log.is_shared; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_consumption_log.is_shared IS '是否使用共享账号�?=共享�?=专属�?;
+COMMENT ON COLUMN public.kiro_consumption_log.is_shared IS '是否使用共享账号??=共享??=专属??';
 
 
 --
 -- Name: COLUMN kiro_consumption_log.consumed_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.kiro_consumption_log.consumed_at IS '消耗时�?;
+COMMENT ON COLUMN public.kiro_consumption_log.consumed_at IS '消耗时??';
 
 
 --
@@ -619,7 +619,7 @@ CREATE TABLE public.model_quotas (
 -- Name: TABLE model_quotas; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.model_quotas IS '模型配额�?;
+COMMENT ON TABLE public.model_quotas IS '模型配额??';
 
 
 --
@@ -654,14 +654,14 @@ COMMENT ON COLUMN public.model_quotas.reset_time IS '配额重置时间';
 -- Name: COLUMN model_quotas.quota; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.model_quotas.quota IS '剩余配额比例�?.0000-1.0000�?;
+COMMENT ON COLUMN public.model_quotas.quota IS '剩余配额比例??.0000-1.0000??';
 
 
 --
 -- Name: COLUMN model_quotas.status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.model_quotas.status IS '模型可用状�? 0=不可�? 1=可用';
+COMMENT ON COLUMN public.model_quotas.status IS '模型可用状?? 0=不可?? 1=可用';
 
 
 --
@@ -701,14 +701,14 @@ CREATE TABLE public.quota_consumption_log (
 -- Name: TABLE quota_consumption_log; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.quota_consumption_log IS '配额消耗记录表：记录每次对话的quota消�?;
+COMMENT ON TABLE public.quota_consumption_log IS '配额消耗记录表：记录每次对话的quota消??';
 
 
 --
 -- Name: COLUMN quota_consumption_log.log_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.quota_consumption_log.log_id IS '日志ID（主键，自增�?;
+COMMENT ON COLUMN public.quota_consumption_log.log_id IS '日志ID（主键，自增??';
 
 
 --
@@ -750,21 +750,21 @@ COMMENT ON COLUMN public.quota_consumption_log.quota_after IS '对话结束后�
 -- Name: COLUMN quota_consumption_log.quota_consumed; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.quota_consumption_log.quota_consumed IS '消耗的quota（quota_before - quota_after�?;
+COMMENT ON COLUMN public.quota_consumption_log.quota_consumed IS '消耗的quota（quota_before - quota_after??';
 
 
 --
 -- Name: COLUMN quota_consumption_log.is_shared; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.quota_consumption_log.is_shared IS '是否使用共享cookie�?=共享�?=专属�?;
+COMMENT ON COLUMN public.quota_consumption_log.is_shared IS '是否使用共享cookie??=共享??=专属??';
 
 
 --
 -- Name: COLUMN quota_consumption_log.consumed_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.quota_consumption_log.consumed_at IS '消耗时�?;
+COMMENT ON COLUMN public.quota_consumption_log.consumed_at IS '消耗时??';
 
 
 --
@@ -817,14 +817,14 @@ CREATE TABLE public.user_shared_quota_pool (
 -- Name: TABLE user_shared_quota_pool; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.user_shared_quota_pool IS '用户共享配额池：用于使用共享cookie时扣�?;
+COMMENT ON TABLE public.user_shared_quota_pool IS '用户共享配额池：用于使用共享cookie时扣??';
 
 
 --
 -- Name: COLUMN user_shared_quota_pool.pool_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.user_shared_quota_pool.pool_id IS '配额池ID（主键，自增�?;
+COMMENT ON COLUMN public.user_shared_quota_pool.pool_id IS '配额池ID（主键，自增??';
 
 
 --
@@ -852,21 +852,21 @@ COMMENT ON COLUMN public.user_shared_quota_pool.quota IS '当前配额';
 -- Name: COLUMN user_shared_quota_pool.max_quota; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.user_shared_quota_pool.max_quota IS '配额上限�?*n，n为用户共享cookie数）';
+COMMENT ON COLUMN public.user_shared_quota_pool.max_quota IS '配额上限??*n，n为用户共享cookie数）';
 
 
 --
 -- Name: COLUMN user_shared_quota_pool.last_recovered_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.user_shared_quota_pool.last_recovered_at IS '最后恢复时�?;
+COMMENT ON COLUMN public.user_shared_quota_pool.last_recovered_at IS '最后恢复时??';
 
 
 --
 -- Name: COLUMN user_shared_quota_pool.last_updated_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.user_shared_quota_pool.last_updated_at IS '最后更新时�?;
+COMMENT ON COLUMN public.user_shared_quota_pool.last_updated_at IS '最后更新时??';
 
 
 --
@@ -890,7 +890,7 @@ CREATE TABLE public.users (
 -- Name: TABLE users; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.users IS '用户�?;
+COMMENT ON TABLE public.users IS '用户??';
 
 
 --
@@ -904,7 +904,7 @@ COMMENT ON COLUMN public.users.user_id IS '用户UUID（主键）';
 -- Name: COLUMN users.api_key; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.users.api_key IS 'API Key（sk-xxx格式，唯一�?;
+COMMENT ON COLUMN public.users.api_key IS 'API Key（sk-xxx格式，唯一??';
 
 
 --
@@ -918,14 +918,14 @@ COMMENT ON COLUMN public.users.name IS '用户名称';
 -- Name: COLUMN users.prefer_shared; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.users.prefer_shared IS 'Cookie优先�? 0=专属优先, 1=共享优先';
+COMMENT ON COLUMN public.users.prefer_shared IS 'Cookie优先?? 0=专属优先, 1=共享优先';
 
 
 --
 -- Name: COLUMN users.status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.users.status IS '用户状�? 0=禁用, 1=启用';
+COMMENT ON COLUMN public.users.status IS '用户状?? 0=禁用, 1=启用';
 
 
 --
@@ -1441,5 +1441,4 @@ CREATE TABLE public.kiro_subscription_models (
 --
 -- PostgreSQL database dump complete
 --
-
 
