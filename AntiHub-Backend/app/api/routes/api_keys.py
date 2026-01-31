@@ -3,6 +3,7 @@ API密钥管理路由
 用户可以创建、查看、删除自己的API密钥
 """
 from typing import List
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, get_db, get_redis
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 router = APIRouter(prefix="/api-keys", tags=["API密钥管理"])
+logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -183,6 +185,16 @@ async def update_api_key_type(
     """更新API密钥类型"""
     try:
         repo = APIKeyRepository(db)
+
+        # 先读一次旧值用于审计日志（不要打印 key 明文）
+        old_key = await repo.get_by_id(key_id)
+        if not old_key or old_key.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="API密钥不存在或无权访问"
+            )
+        old_type = old_key.config_type
+
         api_key = await repo.update_type(
             key_id=key_id,
             user_id=current_user.id,
@@ -196,6 +208,14 @@ async def update_api_key_type(
             )
 
         await db.commit()
+
+        logger.info(
+            "api_key config_type updated: user_id=%s key_id=%s from=%s to=%s",
+            current_user.id,
+            key_id,
+            old_type,
+            request.config_type,
+        )
 
         # 清理 API Key 认证缓存，避免 config_type 变更后短时间内继续走旧路由
         try:
