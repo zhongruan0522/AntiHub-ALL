@@ -3,8 +3,9 @@ Gemini 兼容 API（v1beta）
 
 - config_type=gemini-cli：仅支持文本类 generateContent / streamGenerateContent
 - config_type=zai-image：仅支持本地图片模型（LOCAL_IMAGE_MODELS）生成
+- config_type=antigravity：Gemini v1beta <-> OpenAI Chat 翻译闭环（路线A）
 """
-from typing import Optional
+from typing import Optional, Dict, Any
 import json
 import logging
 import time
@@ -14,14 +15,21 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps_flexible import get_user_flexible_with_goog_api_key
-from app.api.deps import get_db_session, get_redis
+from app.api.deps import get_db_session, get_redis, get_plugin_api_service
 from app.cache import RedisClient
 from app.core.spec_guard import ensure_spec_allowed
 from app.models.user import User
+from app.services.plugin_api_service import PluginAPIService
 from app.services.gemini_cli_api_service import GeminiCLIAPIService
 from app.schemas.plugin_api import GenerateContentRequest
+from app.services.usage_log_service import SSEUsageTracker, extract_openai_usage
 from app.services.usage_log_service import UsageLogService
 from app.services.zai_image_service import ZaiImageService
+from app.utils.gemini_openai_chat_compat import (
+    ChatCompletionsSSEToGeminiSSETranslator,
+    gemini_generate_content_request_to_openai_chat_request,
+    openai_chat_response_to_gemini_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,13 +162,14 @@ def _resolve_config_type(current_user: User, raw_request: Request) -> Optional[s
 @router.post(
     "/models/{model}:generateContent",
     summary="Gemini v1beta generateContent",
-    description="Gemini 兼容 generateContent：gemini-cli（文本）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
+    description="Gemini 兼容 generateContent：gemini-cli（文本）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）/ antigravity（路线A：Gemini<->OpenAI Chat 翻译）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
 )
 async def generate_content(
     model: str,
     request: GenerateContentRequest,
     raw_request: Request,
     current_user: User = Depends(get_user_flexible_with_goog_api_key),
+    plugin_api_service: PluginAPIService = Depends(get_plugin_api_service),
     gemini_cli_service: GeminiCLIAPIService = Depends(get_gemini_cli_api_service),
     zai_image_service: ZaiImageService = Depends(get_zai_image_service),
 ):
@@ -266,6 +275,43 @@ async def generate_content(
                 },
             )
 
+        if effective_config_type == "antigravity":
+            openai_request = gemini_generate_content_request_to_openai_chat_request(
+                model=model,
+                request_data=request.model_dump(),
+                stream=False,
+            )
+            extra_headers: Dict[str, str] = {"X-Account-Type": effective_config_type}
+            openai_resp = await plugin_api_service.proxy_request(
+                user_id=current_user.id,
+                method="POST",
+                path="/v1/chat/completions",
+                json_data=openai_request,
+                extra_headers=extra_headers,
+            )
+
+            result = openai_chat_response_to_gemini_response(openai_resp)
+
+            in_tok, out_tok, total_tok = extract_openai_usage(openai_resp)
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            await UsageLogService.record(
+                user_id=current_user.id,
+                api_key_id=api_key_id,
+                endpoint=endpoint,
+                method=method,
+                model_name=model,
+                config_type=effective_config_type,
+                stream=False,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                total_tokens=total_tok,
+                success=True,
+                status_code=200,
+                duration_ms=duration_ms,
+            )
+
+            return result
+
         # gemini-cli：只允许文本生成，拒绝图片模型/inlineData/imageConfig
         normalized_model = (model or "").strip().lower()
         if normalized_model in LOCAL_IMAGE_MODELS or "image" in normalized_model:
@@ -327,7 +373,7 @@ async def generate_content(
         else:
             detail = error_data
 
-        if effective_config_type == "gemini-cli":
+        if effective_config_type in ("gemini-cli", "antigravity"):
             await UsageLogService.record(
                 user_id=current_user.id,
                 api_key_id=api_key_id,
@@ -348,7 +394,7 @@ async def generate_content(
         )
     except ValueError as e:
         duration_ms = int((time.monotonic() - start_time) * 1000)
-        if effective_config_type == "gemini-cli":
+        if effective_config_type in ("gemini-cli", "antigravity"):
             await UsageLogService.record(
                 user_id=current_user.id,
                 api_key_id=api_key_id,
@@ -368,7 +414,7 @@ async def generate_content(
         )
     except Exception as e:
         duration_ms = int((time.monotonic() - start_time) * 1000)
-        if effective_config_type == "gemini-cli":
+        if effective_config_type in ("gemini-cli", "antigravity"):
             await UsageLogService.record(
                 user_id=current_user.id,
                 api_key_id=api_key_id,
@@ -391,7 +437,7 @@ async def generate_content(
 @router.post(
     "/models/{model}:streamGenerateContent",
     summary="Gemini v1beta streamGenerateContent",
-    description="Gemini 兼容 streamGenerateContent：gemini-cli（文本）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
+    description="Gemini 兼容 streamGenerateContent：gemini-cli（文本）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）/ antigravity（路线A：Gemini<->OpenAI Chat 翻译）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
 )
 async def stream_generate_content(
     model: str,
@@ -399,6 +445,7 @@ async def stream_generate_content(
     raw_request: Request,
     alt: str = Query(default="sse", description="响应格式，默认为sse"),
     current_user: User = Depends(get_user_flexible_with_goog_api_key),
+    plugin_api_service: PluginAPIService = Depends(get_plugin_api_service),
     gemini_cli_service: GeminiCLIAPIService = Depends(get_gemini_cli_api_service),
     zai_image_service: ZaiImageService = Depends(get_zai_image_service),
 ):
@@ -412,6 +459,77 @@ async def stream_generate_content(
     effective_config_type = config_type
 
     try:
+        if effective_config_type == "antigravity":
+            if alt != "sse":
+                raise ValueError("Antigravity route A 目前仅支持 alt=sse 的流式响应")
+
+            api_key = await plugin_api_service.get_user_api_key(current_user.id)
+            if not api_key:
+                raise ValueError("用户未配置plug-in API密钥")
+
+            openai_request = gemini_generate_content_request_to_openai_chat_request(
+                model=model,
+                request_data=request.model_dump(),
+                stream=True,
+            )
+            extra_headers: Dict[str, str] = {"X-Account-Type": effective_config_type}
+
+            tracker = SSEUsageTracker()
+            translator = ChatCompletionsSSEToGeminiSSETranslator()
+
+            async def generate():
+                try:
+                    async for chunk in plugin_api_service.proxy_stream_request(
+                        user_id=current_user.id,
+                        method="POST",
+                        path="/v1/chat/completions",
+                        json_data=openai_request,
+                        extra_headers=extra_headers,
+                    ):
+                        if isinstance(chunk, (bytes, bytearray)):
+                            tracker.feed(bytes(chunk))
+                            out_chunks, _done = translator.feed(bytes(chunk))
+                        else:
+                            raw = str(chunk).encode("utf-8", errors="replace")
+                            tracker.feed(raw)
+                            out_chunks, _done = translator.feed(raw)
+                        for out in out_chunks:
+                            yield out
+                except Exception as e:
+                    tracker.success = False
+                    tracker.status_code = tracker.status_code or 500
+                    tracker.error_message = str(e)
+                    raise
+                finally:
+                    tracker.finalize()
+                    duration_ms = int((time.monotonic() - start_time) * 1000)
+                    await UsageLogService.record(
+                        user_id=current_user.id,
+                        api_key_id=api_key_id,
+                        endpoint=endpoint,
+                        method=method,
+                        model_name=model,
+                        config_type=effective_config_type,
+                        stream=True,
+                        input_tokens=tracker.input_tokens,
+                        output_tokens=tracker.output_tokens,
+                        total_tokens=tracker.total_tokens,
+                        success=tracker.success,
+                        status_code=tracker.status_code,
+                        error_message=tracker.error_message,
+                        duration_ms=duration_ms,
+                    )
+
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
         if effective_config_type == "gemini-cli":
             if alt != "sse":
                 raise ValueError("GeminiCLI 目前仅支持 alt=sse 的流式响应")
@@ -581,7 +699,7 @@ async def stream_generate_content(
         else:
             detail = error_data
 
-        if effective_config_type == "gemini-cli":
+        if effective_config_type in ("gemini-cli", "antigravity"):
             await UsageLogService.record(
                 user_id=current_user.id,
                 api_key_id=api_key_id,
@@ -602,7 +720,7 @@ async def stream_generate_content(
         )
     except ValueError as e:
         duration_ms = int((time.monotonic() - start_time) * 1000)
-        if effective_config_type == "gemini-cli":
+        if effective_config_type in ("gemini-cli", "antigravity"):
             await UsageLogService.record(
                 user_id=current_user.id,
                 api_key_id=api_key_id,
@@ -622,7 +740,7 @@ async def stream_generate_content(
         )
     except Exception as e:
         duration_ms = int((time.monotonic() - start_time) * 1000)
-        if effective_config_type == "gemini-cli":
+        if effective_config_type in ("gemini-cli", "antigravity"):
             await UsageLogService.record(
                 user_id=current_user.id,
                 api_key_id=api_key_id,

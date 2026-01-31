@@ -22,7 +22,7 @@ SPEC_CONFIG_TYPE_ALLOWLIST_CURRENT: Final[Mapping[SpecName, FrozenSet[str]]] = {
     # Report.md 3.3
     "Claude": frozenset({"antigravity", "kiro", "qwen"}),
     # Report.md 3.4
-    "Gemini": frozenset({"gemini-cli", "zai-image"}),
+    "Gemini": frozenset({"gemini-cli", "zai-image", "antigravity"}),
 }
 
 

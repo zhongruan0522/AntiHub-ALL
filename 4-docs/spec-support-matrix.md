@@ -22,7 +22,7 @@
 | `OAIResponses` | `codex` |
 | `OAIChat` | `antigravity`, `kiro`, `qwen`, `gemini-cli` |
 | `Claude` | `antigravity`, `kiro`, `qwen` |
-| `Gemini` | `gemini-cli`, `zai-image` |
+| `Gemini` | `gemini-cli`, `zai-image`, `antigravity` |
 
 目标态（默认不启用，仅作规划）：
 
@@ -99,6 +99,23 @@ $resp = $client.SendAsync($req).Result
 $resp.StatusCode.value__
 $resp.Content.ReadAsStringAsync().Result
 ```
+
+4) Gemini v1beta 的 antigravity 不应再被 403 拦截：
+
+```powershell
+$req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, 'http://localhost:8000/v1beta/models/gemini-2.5-pro:generateContent')
+$req.Headers.Add('Authorization', "Bearer $token")
+$req.Headers.Add('X-Api-Type', 'antigravity')
+$req.Content = New-Object System.Net.Http.StringContent('{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}', [System.Text.Encoding]::UTF8, 'application/json')
+$resp = $client.SendAsync($req).Result
+$resp.StatusCode.value__
+$resp.Content.ReadAsStringAsync().Result
+```
+
+期望：
+- status **不是** 403
+- 如果未配置 plug-in API key：返回 400，且 body 提示用户未配置
+- 如果已配置：返回 `candidates` 结构的 Gemini JSON
 
 ## 6. SSE / 反代缓冲注意事项
 
