@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps_flexible import get_user_flexible_with_goog_api_key
 from app.api.deps import get_db_session, get_redis
 from app.cache import RedisClient
+from app.core.spec_allowlist import DEFAULT_SPEC_CONFIG_TYPE_ALLOWLIST
 from app.models.user import User
 from app.services.gemini_cli_api_service import GeminiCLIAPIService
 from app.schemas.plugin_api import GenerateContentRequest
@@ -31,8 +32,6 @@ LOCAL_IMAGE_MODELS = (
     "gemini-3-pro-image-preview",
     "gemini-3-pro-image",
 )
-
-ALLOWED_GEMINI_CONFIG_TYPES = ("gemini-cli", "zai-image")
 
 class GeminiSSEUsageTracker:
     def __init__(self) -> None:
@@ -171,7 +170,7 @@ async def generate_content(
     api_key_id = getattr(current_user, "_api_key_id", None)
 
     config_type = _resolve_config_type(current_user, raw_request)
-    if config_type not in ALLOWED_GEMINI_CONFIG_TYPES:
+    if config_type not in DEFAULT_SPEC_CONFIG_TYPE_ALLOWLIST["Gemini"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Gemini v1beta 仅支持 config_type=gemini-cli（文本）或 config_type=zai-image（图片）",
