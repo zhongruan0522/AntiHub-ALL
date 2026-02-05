@@ -11,12 +11,15 @@ GeminiCLI 推理调用服务
 
 from __future__ import annotations
 
+import asyncio
+import email.utils
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -37,6 +40,27 @@ logger = logging.getLogger(__name__)
 
 MODELS_CACHE_TTL_SECONDS = 24 * 60 * 60
 MODELS_FALLBACK_CACHE_TTL_SECONDS = 5 * 60
+QUOTA_BACKOFF_BASE_SECONDS = 1
+QUOTA_BACKOFF_MAX_SECONDS = 30 * 60
+
+
+class GeminiCLIModelCooldownError(Exception):
+    def __init__(self, *, model: str, earliest: datetime):
+        self.model = (model or "").strip() or "requested model"
+        if earliest.tzinfo is None:
+            earliest = earliest.replace(tzinfo=timezone.utc)
+        self.earliest = earliest.astimezone(timezone.utc)
+        super().__init__(
+            f"GeminiCLI：账户均无额度（model={self.model}），最早恢复时间：{_iso(self.earliest)}"
+        )
+
+    def retry_after_seconds(self, *, now: Optional[datetime] = None) -> int:
+        now_dt = now or _now_utc()
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        now_dt = now_dt.astimezone(timezone.utc)
+        seconds = int(math.ceil((self.earliest - now_dt).total_seconds()))
+        return max(seconds, 0)
 
 
 def _env_flag_enabled(key: str) -> bool:
@@ -160,9 +184,116 @@ def _pick_first_project_id(project_id: Optional[str]) -> str:
         return ""
     for part in raw.split(","):
         v = part.strip()
+        if not v:
+            continue
+        if v.upper() == "ALL":
+            continue
         if v:
             return v
     return ""
+
+
+def _parse_project_ids(project_id: Optional[str]) -> List[str]:
+    raw = (project_id or "").strip()
+    if not raw:
+        return []
+    out: List[str] = []
+    seen = set()
+    for part in raw.split(","):
+        v = part.strip()
+        if not v:
+            continue
+        if v.upper() == "ALL":
+            continue
+        if v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out
+
+
+def _iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_rfc3339_datetime(value: Optional[str]) -> Optional[datetime]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_retry_after(headers: httpx.Headers, *, now: datetime) -> Optional[datetime]:
+    raw = (headers.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+
+    # Retry-After: <seconds>
+    try:
+        seconds = int(raw)
+        if seconds < 0:
+            seconds = 0
+        return now + timedelta(seconds=seconds)
+    except Exception:
+        pass
+
+    # Retry-After: <http-date>
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+    except Exception:
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class _GeminiCLIRoutingState:
+    """
+    GeminiCLI 账号/项目路由状态（参考 CLIProxyAPI 的 selector + quota cooldown 思路）。
+
+    - cursor_key: user+model -> round-robin 指针
+    - cooldown_key: account+project+model -> 下次可用时间
+    """
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.cursors: Dict[str, int] = {}
+        self.cooldowns: Dict[str, datetime] = {}
+        self.backoff_levels: Dict[str, int] = {}
+
+    def cleanup_expired(self, now: datetime) -> None:
+        expired = [k for k, t in self.cooldowns.items() if t <= now]
+        for k in expired:
+            self.cooldowns.pop(k, None)
+            self.backoff_levels.pop(k, None)
+
+
+_gemini_cli_routing_state = _GeminiCLIRoutingState()
+
+
+def _normalize_model_key(model: str) -> str:
+    raw = (model or "").strip().lower()
+    if "/" in raw:
+        raw = raw.split("/")[-1]
+    return raw
+
+
+def _cursor_key(user_id: int, model: str) -> str:
+    return f"gemini_cli_rr:{int(user_id)}:{_normalize_model_key(model)}"
+
+
+def _cooldown_key(account_id: int, project_id: str, model: str) -> str:
+    return f"gemini_cli_cd:{int(account_id)}:{(project_id or '').strip()}:{_normalize_model_key(model)}"
 
 
 def _default_safety_settings() -> List[Dict[str, str]]:
@@ -224,6 +355,11 @@ def _openai_error_sse(message: str, *, code: int = 500, error_type: str = "upstr
 
 def _openai_done_sse() -> bytes:
     return b"data: [DONE]\n\n"
+
+
+def _gemini_error_sse(message: str, *, code: int = 500) -> bytes:
+    payload = {"error": {"message": (message or "upstream_error"), "code": int(code or 500)}}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
 @dataclass
@@ -935,28 +1071,194 @@ class GeminiCLIAPIService:
         except Exception:
             return []
 
-    async def _prepare_account(self, user_id: int) -> Tuple[str, str]:
+    async def _build_candidates(self, user_id: int) -> List[Tuple[Any, str]]:
         """
-        选择一个可用账号，返回 (access_token, project_id)
+        构建候选池（账号 × 项目）。
+
+        约定：
+        - 仅从“已启用”账号里选
+        - project_id 支持逗号分隔
+        - "ALL" 不作为可用项目 ID
         """
         accounts = await self.repo.list_enabled_by_user_id(user_id)
         if not accounts:
             raise ValueError("未找到可用的 GeminiCLI 账号（请先在面板完成 OAuth 并启用账号）")
 
-        account = accounts[0]
-        project_id = _pick_first_project_id(getattr(account, "project_id", None))
-        if not project_id:
+        candidates: List[Tuple[Any, str]] = []
+        has_missing_project = False
+        for account in accounts:
+            projects = _parse_project_ids(getattr(account, "project_id", None))
+            if not projects:
+                has_missing_project = True
+                continue
+            for pid in projects:
+                candidates.append((account, pid))
+
+        if candidates:
+            return candidates
+
+        if has_missing_project:
             raise ValueError("GeminiCLI 账号缺少 project_id（请先在账号详情里填写 GCP Project ID）")
+        raise ValueError("未找到可用的 GeminiCLI 账号/项目组合")
 
-        access_token = await self.account_service.get_valid_access_token(user_id, int(account.id))
+    async def _select_candidate(
+        self,
+        *,
+        user_id: int,
+        model: str,
+        candidates: List[Tuple[Any, str]],
+        exclude: set[str],
+    ) -> Tuple[Any, str]:
+        """
+        轮询选择一个候选（参考 CLIProxyAPI RoundRobinSelector 的思路）：
+        - key: user_id + model
+        - 跳过处于 quota cooldown 的候选（account+project+model）
+        """
+        now = _now_utc()
+        async with _gemini_cli_routing_state.lock:
+            _gemini_cli_routing_state.cleanup_expired(now)
 
-        # best-effort 记录 last_used_at；commit 由 get_db() 依赖统一处理
+            available: List[Tuple[Any, str]] = []
+            earliest: Optional[datetime] = None
+            for account, project_id in candidates:
+                cd_key = _cooldown_key(int(getattr(account, "id", 0) or 0), project_id, model)
+                if cd_key in exclude:
+                    continue
+                cd_until = _gemini_cli_routing_state.cooldowns.get(cd_key)
+                if cd_until is not None and cd_until > now:
+                    if earliest is None or cd_until < earliest:
+                        earliest = cd_until
+                    continue
+                available.append((account, project_id))
+
+            if not available:
+                if earliest is not None:
+                    raise GeminiCLIModelCooldownError(model=model, earliest=earliest)
+                raise ValueError(f"GeminiCLI 模型 {model} 无可用账号（可能都缺少 project_id 或已被本次请求排除）")
+
+            key = _cursor_key(user_id, model)
+            cursor = _gemini_cli_routing_state.cursors.get(key, 0)
+            if cursor >= 2_147_483_640:
+                cursor = 0
+            _gemini_cli_routing_state.cursors[key] = cursor + 1
+            return available[cursor % len(available)]
+
+    async def _clear_cooldown(self, *, account_id: int, project_id: str, model: str) -> None:
+        cd_key = _cooldown_key(account_id, project_id, model)
+        now = _now_utc()
+        async with _gemini_cli_routing_state.lock:
+            _gemini_cli_routing_state.cleanup_expired(now)
+            _gemini_cli_routing_state.cooldowns.pop(cd_key, None)
+            _gemini_cli_routing_state.backoff_levels.pop(cd_key, None)
+
+    async def _mark_quota_cooldown(
+        self,
+        *,
+        account_id: int,
+        project_id: str,
+        model: str,
+        retry_at: Optional[datetime],
+    ) -> datetime:
+        """
+        标记 quota 冷却时间：
+        - 优先用 retry_at（来自 Retry-After 或 quota reset_time）
+        - 否则按指数退避（参考 CLIProxyAPI nextQuotaCooldown）
+        """
+        cd_key = _cooldown_key(account_id, project_id, model)
+        now = _now_utc()
+        async with _gemini_cli_routing_state.lock:
+            _gemini_cli_routing_state.cleanup_expired(now)
+
+            next_at = retry_at
+            if next_at is not None:
+                if next_at.tzinfo is None:
+                    next_at = next_at.replace(tzinfo=timezone.utc)
+                next_at = next_at.astimezone(timezone.utc)
+
+            if next_at is None or next_at <= now:
+                level = _gemini_cli_routing_state.backoff_levels.get(cd_key, 0)
+                if level < 0:
+                    level = 0
+                seconds = QUOTA_BACKOFF_BASE_SECONDS * (1 << level)
+                if seconds < QUOTA_BACKOFF_BASE_SECONDS:
+                    seconds = QUOTA_BACKOFF_BASE_SECONDS
+                if seconds >= QUOTA_BACKOFF_MAX_SECONDS:
+                    seconds = QUOTA_BACKOFF_MAX_SECONDS
+                    _gemini_cli_routing_state.backoff_levels[cd_key] = level
+                else:
+                    _gemini_cli_routing_state.backoff_levels[cd_key] = level + 1
+                next_at = now + timedelta(seconds=seconds)
+            else:
+                _gemini_cli_routing_state.backoff_levels[cd_key] = 0
+
+            _gemini_cli_routing_state.cooldowns[cd_key] = next_at
+            return next_at
+
+    async def _quota_retry_at_best_effort(
+        self,
+        *,
+        user_id: int,
+        account_id: int,
+        project_id: str,
+        model: str,
+    ) -> Optional[datetime]:
+        """
+        quota reset_time 优先级高于“纯退避”，因为它更接近真实恢复时间。
+        失败就返回 None（调用方用 Retry-After/退避兜底）。
+        """
         try:
-            await self.repo.update_last_used_at(int(account.id), user_id)
+            quota = await self.account_service.get_account_quota(
+                user_id,
+                account_id,
+                project_id=project_id,
+            )
         except Exception:
-            pass
+            return None
 
-        return access_token, project_id
+        data = quota.get("data") if isinstance(quota, dict) else None
+        if not isinstance(data, dict):
+            return None
+        buckets = data.get("buckets")
+        if not isinstance(buckets, list):
+            return None
+
+        model_key = _normalize_model_key(model)
+        earliest: Optional[datetime] = None
+        for item in buckets:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("model_id")
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            if _normalize_model_key(model_id) != model_key:
+                continue
+            reset_time = item.get("reset_time")
+            if not isinstance(reset_time, str) or not reset_time.strip():
+                continue
+            dt = _parse_rfc3339_datetime(reset_time)
+            if dt is None:
+                continue
+            if earliest is None or dt < earliest:
+                earliest = dt
+
+        return earliest
+
+    async def _prepare_access_token(self, *, user_id: int, account_id: int) -> str:
+        return await self.account_service.get_valid_access_token(user_id, account_id)
+
+    async def _try_refresh_account_best_effort(self, *, user_id: int, account: Any) -> bool:
+        """
+        401/403 场景下的 best-effort 刷新。
+        """
+        try:
+            creds = self.account_service._load_account_credentials(account)
+            refreshed = await self.account_service._try_refresh_account(account, creds)
+            if refreshed:
+                # 触发一次 reload，让后续 get_valid_access_token 拿到最新 token
+                _ = await self.repo.get_by_id_and_user_id(int(getattr(account, "id", 0) or 0), user_id)
+            return bool(refreshed)
+        except Exception:
+            return False
 
     def _headers(self, access_token: str, *, accept: str) -> Dict[str, str]:
         return {
@@ -972,16 +1274,89 @@ class GeminiCLIAPIService:
         """
         OpenAI Chat（非流式）：调用 cloudcode-pa generateContent，并返回 OpenAI JSON。
         """
-        access_token, project_id = await self._prepare_account(user_id)
         payload = _openai_request_to_gemini_cli_payload(request_data)
-        payload["project"] = project_id
+        model = (payload.get("model") or "").strip() or "gemini-2.5-pro"
+        candidates = await self._build_candidates(user_id)
+        exclude: set[str] = set()
+        last_error: Optional[str] = None
 
         url = f"{CLOUDCODE_PA_BASE_URL}:generateContent"
-        headers = self._headers(access_token, accept="application/json")
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(1200.0, connect=60.0)) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code >= 400:
+            while True:
+                try:
+                    account, project_id = await self._select_candidate(
+                        user_id=user_id,
+                        model=model,
+                        candidates=candidates,
+                        exclude=exclude,
+                    )
+                except ValueError as e:
+                    msg = str(e)
+                    if "最早恢复时间" in msg or "冷却" in msg:
+                        raise ValueError(msg) from e
+                    raise ValueError(last_error or msg) from e
+
+                account_id = int(getattr(account, "id", 0) or 0)
+                cd_key = _cooldown_key(account_id, project_id, model)
+                exclude.add(cd_key)
+
+                # best-effort 记录 last_used_at；commit 由 get_db() 依赖统一处理
+                try:
+                    await self.repo.update_last_used_at(account_id, user_id)
+                except Exception:
+                    pass
+
+                resp: Optional[httpx.Response] = None
+                for auth_try in range(2):
+                    access_token = await self._prepare_access_token(user_id=user_id, account_id=account_id)
+                    payload["project"] = project_id
+                    headers = self._headers(access_token, accept="application/json")
+                    resp = await client.post(url, json=payload, headers=headers)
+
+                    if 200 <= resp.status_code < 300:
+                        await self._clear_cooldown(account_id=account_id, project_id=project_id, model=model)
+                        raw = resp.json()
+                        if not isinstance(raw, dict):
+                            raise ValueError("GeminiCLI 上游响应格式异常（非对象）")
+                        return _gemini_cli_response_to_openai_response(raw)
+
+                    if resp.status_code in (401, 403) and auth_try == 0:
+                        refreshed = await self._try_refresh_account_best_effort(user_id=user_id, account=account)
+                        if refreshed:
+                            continue
+                    break
+
+                if resp is None:
+                    raise ValueError("GeminiCLI 请求失败：请求未发出")
+
+                if resp.status_code == 429:
+                    now = _now_utc()
+                    retry_at = _parse_retry_after(resp.headers, now=now)
+                    if retry_at is None:
+                        retry_at = await self._quota_retry_at_best_effort(
+                            user_id=user_id,
+                            account_id=account_id,
+                            project_id=project_id,
+                            model=model,
+                        )
+                    next_at = await self._mark_quota_cooldown(
+                        account_id=account_id,
+                        project_id=project_id,
+                        model=model,
+                        retry_at=retry_at,
+                    )
+                    last_error = f"GeminiCLI quota exhausted（model={model}），最早恢复时间：{_iso(next_at)}"
+                    continue
+
+                if resp.status_code in (401, 403):
+                    last_error = f"GeminiCLI 账号鉴权失败（HTTP {resp.status_code}），已自动切换下一个账号"
+                    continue
+
+                if resp.status_code in (408, 500, 502, 503, 504):
+                    last_error = f"GeminiCLI 上游暂时不可用（HTTP {resp.status_code}），已自动切换下一个账号"
+                    continue
+
                 try:
                     error_data = resp.json()
                 except Exception:
@@ -993,11 +1368,6 @@ class GeminiCLIAPIService:
                 )
                 err.response_data = error_data
                 raise err
-
-            raw = resp.json()
-            if not isinstance(raw, dict):
-                raise ValueError("GeminiCLI 上游响应格式异常（非对象）")
-            return _gemini_cli_response_to_openai_response(raw)
 
     async def openai_chat_completions_stream(
         self,
@@ -1009,73 +1379,160 @@ class GeminiCLIAPIService:
         OpenAI Chat（流式）：调用 cloudcode-pa streamGenerateContent?alt=sse，
         并把每个 event 翻译成 OpenAI SSE（data: {...}\\n\\n + [DONE]）。
         """
-        access_token, project_id = await self._prepare_account(user_id)
         payload = _openai_request_to_gemini_cli_payload(request_data)
-        payload["project"] = project_id
+        model = (payload.get("model") or "").strip() or "gemini-2.5-pro"
+        candidates = await self._build_candidates(user_id)
+        exclude: set[str] = set()
 
         url = f"{CLOUDCODE_PA_BASE_URL}:streamGenerateContent?alt=sse"
-        headers = self._headers(access_token, accept="text/event-stream")
-
         state = _OpenAIStreamState(created=int(time.time()), function_index=0)
 
+        last_error: Optional[str] = None
+        last_code: int = 400
+        last_error_type: str = "invalid_request_error"
+
         async with httpx.AsyncClient(timeout=httpx.Timeout(1200.0, connect=60.0)) as client:
-            async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    msg = body.decode("utf-8", errors="replace")[:500]
-                    yield _openai_error_sse(msg or "upstream_error", code=resp.status_code)
+            while True:
+                try:
+                    account, project_id = await self._select_candidate(
+                        user_id=user_id,
+                        model=model,
+                        candidates=candidates,
+                        exclude=exclude,
+                    )
+                except ValueError as e:
+                    msg = str(e)
+                    is_cooldown = "最早恢复时间" in msg or "冷却" in msg
+                    if last_error and not is_cooldown:
+                        out_msg = last_error
+                        out_code = last_code
+                        out_type = last_error_type
+                    else:
+                        out_msg = msg
+                        out_code = 429 if is_cooldown else 400
+                        out_type = "quota_exhausted" if is_cooldown else "invalid_request_error"
+                    yield _openai_error_sse(out_msg, code=out_code, error_type=out_type)
                     yield _openai_done_sse()
                     return
 
-                sample_logger = _GeminiCLISSESampleLogger(label="openai_chat")
-                buffer = b""
-                event_data_lines: List[bytes] = []
-                async for chunk in resp.aiter_raw():
-                    if not chunk:
-                        continue
-                    buffer += chunk
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        line = line.rstrip(b"\r")
+                account_id = int(getattr(account, "id", 0) or 0)
+                cd_key = _cooldown_key(account_id, project_id, model)
+                exclude.add(cd_key)
 
-                        # SSE event delimiter
-                        if line == b"":
-                            if not event_data_lines:
+                try:
+                    await self.repo.update_last_used_at(account_id, user_id)
+                except Exception:
+                    pass
+
+                for auth_try in range(2):
+                    access_token = await self._prepare_access_token(user_id=user_id, account_id=account_id)
+                    payload["project"] = project_id
+                    headers = self._headers(access_token, accept="text/event-stream")
+                    async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                        if 200 <= resp.status_code < 300:
+                            await self._clear_cooldown(account_id=account_id, project_id=project_id, model=model)
+
+                            sample_logger = _GeminiCLISSESampleLogger(label="openai_chat")
+                            buffer = b""
+                            event_data_lines: List[bytes] = []
+                            async for chunk in resp.aiter_raw():
+                                if not chunk:
+                                    continue
+                                buffer += chunk
+                                while b"\n" in buffer:
+                                    line, buffer = buffer.split(b"\n", 1)
+                                    line = line.rstrip(b"\r")
+
+                                    # SSE event delimiter
+                                    if line == b"":
+                                        if not event_data_lines:
+                                            continue
+                                        data = b"\n".join(event_data_lines).strip()
+                                        event_data_lines = []
+                                        if not data:
+                                            continue
+                                        try:
+                                            event_obj = json.loads(data.decode("utf-8", errors="replace"))
+                                        except Exception:
+                                            continue
+                                        sample_logger.maybe_log(data=data, event_obj=event_obj)
+                                        if not isinstance(event_obj, dict):
+                                            continue
+
+                                        for payload_obj in _gemini_cli_event_to_openai_chunks(event_obj, state=state):
+                                            yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n".encode(
+                                                "utf-8"
+                                            )
+                                        continue
+
+                                    if line.startswith(b"data:"):
+                                        event_data_lines.append(line[5:].lstrip())
+                                        continue
+
+                            # best-effort flush（极端情况下上游不以空行结尾）
+                            if event_data_lines:
+                                data = b"\n".join(event_data_lines).strip()
+                                if data:
+                                    try:
+                                        event_obj = json.loads(data.decode("utf-8", errors="replace"))
+                                    except Exception:
+                                        event_obj = None
+                                    if isinstance(event_obj, dict):
+                                        sample_logger.maybe_log(data=data, event_obj=event_obj)
+                                        for payload_obj in _gemini_cli_event_to_openai_chunks(event_obj, state=state):
+                                            yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n".encode(
+                                                "utf-8"
+                                            )
+
+                            yield _openai_done_sse()
+                            return
+
+                        body = await resp.aread()
+                        msg = body.decode("utf-8", errors="replace")[:500]
+
+                        if resp.status_code in (401, 403) and auth_try == 0:
+                            refreshed = await self._try_refresh_account_best_effort(user_id=user_id, account=account)
+                            if refreshed:
                                 continue
-                            data = b"\n".join(event_data_lines).strip()
-                            event_data_lines = []
-                            if not data:
-                                continue
-                            try:
-                                event_obj = json.loads(data.decode("utf-8", errors="replace"))
-                            except Exception:
-                                continue
-                            sample_logger.maybe_log(data=data, event_obj=event_obj)
-                            if not isinstance(event_obj, dict):
-                                continue
 
-                            for payload_obj in _gemini_cli_event_to_openai_chunks(event_obj, state=state):
-                                yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n".encode("utf-8")
-                            continue
+                        if resp.status_code in (401, 403):
+                            last_error = f"GeminiCLI 账号鉴权失败（HTTP {resp.status_code}），已自动切换下一个账号"
+                            last_code = resp.status_code
+                            last_error_type = "auth_error"
+                            break
 
-                        if line.startswith(b"data:"):
-                            event_data_lines.append(line[5:].lstrip())
-                            continue
+                        if resp.status_code == 429:
+                            now = _now_utc()
+                            retry_at = _parse_retry_after(resp.headers, now=now)
+                            if retry_at is None:
+                                retry_at = await self._quota_retry_at_best_effort(
+                                    user_id=user_id,
+                                    account_id=account_id,
+                                    project_id=project_id,
+                                    model=model,
+                                )
+                            next_at = await self._mark_quota_cooldown(
+                                account_id=account_id,
+                                project_id=project_id,
+                                model=model,
+                                retry_at=retry_at,
+                            )
+                            last_error = f"GeminiCLI quota exhausted（model={model}），最早恢复时间：{_iso(next_at)}"
+                            last_code = 429
+                            last_error_type = "quota_exhausted"
+                            break
 
-                # best-effort flush（极端情况下上游不以空行结尾）
-                if event_data_lines:
-                    data = b"\n".join(event_data_lines).strip()
-                    if data:
-                        try:
-                            event_obj = json.loads(data.decode("utf-8", errors="replace"))
-                        except Exception:
-                            event_obj = None
-                        if isinstance(event_obj, dict):
-                            sample_logger.maybe_log(data=data, event_obj=event_obj)
-                            for payload_obj in _gemini_cli_event_to_openai_chunks(event_obj, state=state):
-                                yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n".encode("utf-8")
+                        if resp.status_code in (408, 500, 502, 503, 504):
+                            last_error = f"GeminiCLI 上游暂时不可用（HTTP {resp.status_code}），已自动切换下一个账号"
+                            last_code = resp.status_code
+                            last_error_type = "upstream_error"
+                            break
 
-                yield _openai_done_sse()
+                        yield _openai_error_sse(msg or "upstream_error", code=resp.status_code)
+                        yield _openai_done_sse()
+                        return
+
+                continue
 
     async def gemini_generate_content(
         self,
@@ -1087,16 +1544,88 @@ class GeminiCLIAPIService:
         """
         Gemini v1beta generateContent（非流式）：返回 Gemini 标准 JSON。
         """
-        access_token, project_id = await self._prepare_account(user_id)
         payload = _normalize_gemini_request_to_cli_request(model, request_data)
-        payload["project"] = project_id
+        candidates = await self._build_candidates(user_id)
+        exclude: set[str] = set()
+        last_error: Optional[str] = None
 
         url = f"{CLOUDCODE_PA_BASE_URL}:generateContent"
-        headers = self._headers(access_token, accept="application/json")
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(1200.0, connect=60.0)) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code >= 400:
+            while True:
+                try:
+                    account, project_id = await self._select_candidate(
+                        user_id=user_id,
+                        model=model,
+                        candidates=candidates,
+                        exclude=exclude,
+                    )
+                except ValueError as e:
+                    msg = str(e)
+                    if "最早恢复时间" in msg or "冷却" in msg:
+                        raise ValueError(msg) from e
+                    raise ValueError(last_error or msg) from e
+
+                account_id = int(getattr(account, "id", 0) or 0)
+                cd_key = _cooldown_key(account_id, project_id, model)
+                exclude.add(cd_key)
+
+                try:
+                    await self.repo.update_last_used_at(account_id, user_id)
+                except Exception:
+                    pass
+
+                resp: Optional[httpx.Response] = None
+                for auth_try in range(2):
+                    access_token = await self._prepare_access_token(user_id=user_id, account_id=account_id)
+                    payload["project"] = project_id
+                    headers = self._headers(access_token, accept="application/json")
+                    resp = await client.post(url, json=payload, headers=headers)
+
+                    if 200 <= resp.status_code < 300:
+                        await self._clear_cooldown(account_id=account_id, project_id=project_id, model=model)
+                        raw = resp.json()
+                        if not isinstance(raw, dict):
+                            raise ValueError("GeminiCLI 上游响应格式异常（非对象）")
+                        response_obj = raw.get("response")
+                        return response_obj if isinstance(response_obj, dict) else raw
+
+                    if resp.status_code in (401, 403) and auth_try == 0:
+                        refreshed = await self._try_refresh_account_best_effort(user_id=user_id, account=account)
+                        if refreshed:
+                            continue
+                    break
+
+                if resp is None:
+                    raise ValueError("GeminiCLI 请求失败：请求未发出")
+
+                if resp.status_code == 429:
+                    now = _now_utc()
+                    retry_at = _parse_retry_after(resp.headers, now=now)
+                    if retry_at is None:
+                        retry_at = await self._quota_retry_at_best_effort(
+                            user_id=user_id,
+                            account_id=account_id,
+                            project_id=project_id,
+                            model=model,
+                        )
+                    next_at = await self._mark_quota_cooldown(
+                        account_id=account_id,
+                        project_id=project_id,
+                        model=model,
+                        retry_at=retry_at,
+                    )
+                    last_error = f"GeminiCLI quota exhausted（model={model}），最早恢复时间：{_iso(next_at)}"
+                    continue
+
+                if resp.status_code in (401, 403):
+                    last_error = f"GeminiCLI 账号鉴权失败（HTTP {resp.status_code}），已自动切换下一个账号"
+                    continue
+
+                if resp.status_code in (408, 500, 502, 503, 504):
+                    last_error = f"GeminiCLI 上游暂时不可用（HTTP {resp.status_code}），已自动切换下一个账号"
+                    continue
+
                 try:
                     error_data = resp.json()
                 except Exception:
@@ -1109,14 +1638,6 @@ class GeminiCLIAPIService:
                 err.response_data = error_data
                 raise err
 
-            raw = resp.json()
-            if not isinstance(raw, dict):
-                raise ValueError("GeminiCLI 上游响应格式异常（非对象）")
-            response_obj = raw.get("response")
-            if isinstance(response_obj, dict):
-                return response_obj
-            return raw
-
     async def gemini_stream_generate_content(
         self,
         *,
@@ -1127,69 +1648,158 @@ class GeminiCLIAPIService:
         """
         Gemini v1beta streamGenerateContent：输出 `data: <GeminiResponse>\\n\\n` 的 SSE（不发送 [DONE]）。
         """
-        access_token, project_id = await self._prepare_account(user_id)
         payload = _normalize_gemini_request_to_cli_request(model, request_data)
-        payload["project"] = project_id
+        candidates = await self._build_candidates(user_id)
+        exclude: set[str] = set()
 
         url = f"{CLOUDCODE_PA_BASE_URL}:streamGenerateContent?alt=sse"
-        headers = self._headers(access_token, accept="text/event-stream")
+
+        last_error: Optional[str] = None
+        last_code: int = 400
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(1200.0, connect=60.0)) as client:
-            async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    msg = body.decode("utf-8", errors="replace")[:500]
-                    yield f"data: {json.dumps({'error': {'message': msg or 'upstream_error', 'code': resp.status_code}}, ensure_ascii=False)}\n\n".encode(
-                        "utf-8"
+            while True:
+                try:
+                    account, project_id = await self._select_candidate(
+                        user_id=user_id,
+                        model=model,
+                        candidates=candidates,
+                        exclude=exclude,
                     )
+                except ValueError as e:
+                    msg = str(e)
+                    is_cooldown = "最早恢复时间" in msg or "冷却" in msg
+                    if last_error and not is_cooldown:
+                        out_msg = last_error
+                        out_code = last_code
+                    else:
+                        out_msg = msg
+                        out_code = 429 if is_cooldown else 400
+                    yield _gemini_error_sse(out_msg, code=out_code)
                     return
 
-                sample_logger = _GeminiCLISSESampleLogger(label="gemini_v1beta")
-                buffer = b""
-                event_data_lines: List[bytes] = []
-                async for chunk in resp.aiter_raw():
-                    if not chunk:
-                        continue
-                    buffer += chunk
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        line = line.rstrip(b"\r")
+                account_id = int(getattr(account, "id", 0) or 0)
+                cd_key = _cooldown_key(account_id, project_id, model)
+                exclude.add(cd_key)
 
-                        # SSE event delimiter
-                        if line == b"":
-                            if not event_data_lines:
-                                continue
-                            data = b"\n".join(event_data_lines).strip()
-                            event_data_lines = []
-                            if not data:
-                                continue
-                            try:
-                                event_obj = json.loads(data.decode("utf-8", errors="replace"))
-                            except Exception:
-                                continue
-                            sample_logger.maybe_log(data=data, event_obj=event_obj)
-                            if not isinstance(event_obj, dict):
-                                continue
-                            resp_obj = event_obj.get("response")
-                            if not isinstance(resp_obj, dict):
-                                continue
-                            yield f"data: {json.dumps(resp_obj, ensure_ascii=False)}\n\n".encode("utf-8")
-                            continue
+                try:
+                    await self.repo.update_last_used_at(account_id, user_id)
+                except Exception:
+                    pass
 
-                        if line.startswith(b"data:"):
-                            event_data_lines.append(line[5:].lstrip())
-                            continue
+                for auth_try in range(2):
+                    access_token = await self._prepare_access_token(user_id=user_id, account_id=account_id)
+                    payload["project"] = project_id
+                    headers = self._headers(access_token, accept="text/event-stream")
 
-                # best-effort flush（极端情况下上游不以空行结尾）
-                if event_data_lines:
-                    data = b"\n".join(event_data_lines).strip()
-                    if data:
-                        try:
-                            event_obj = json.loads(data.decode("utf-8", errors="replace"))
-                        except Exception:
-                            event_obj = None
-                        if isinstance(event_obj, dict):
-                            sample_logger.maybe_log(data=data, event_obj=event_obj)
-                            resp_obj = event_obj.get("response")
-                            if isinstance(resp_obj, dict):
-                                yield f"data: {json.dumps(resp_obj, ensure_ascii=False)}\n\n".encode("utf-8")
+                    async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                        if 200 <= resp.status_code < 300:
+                            await self._clear_cooldown(account_id=account_id, project_id=project_id, model=model)
+
+                            sample_logger = _GeminiCLISSESampleLogger(label="gemini_v1beta")
+                            buffer = b""
+                            event_data_lines: List[bytes] = []
+                            async for chunk in resp.aiter_raw():
+                                if not chunk:
+                                    continue
+                                buffer += chunk
+                                while b"\n" in buffer:
+                                    line, buffer = buffer.split(b"\n", 1)
+                                    line = line.rstrip(b"\r")
+
+                                    # SSE event delimiter
+                                    if line == b"":
+                                        if not event_data_lines:
+                                            continue
+                                        data = b"\n".join(event_data_lines).strip()
+                                        event_data_lines = []
+                                        if not data:
+                                            continue
+                                        try:
+                                            event_obj = json.loads(data.decode("utf-8", errors="replace"))
+                                        except Exception:
+                                            continue
+                                        sample_logger.maybe_log(data=data, event_obj=event_obj)
+                                        if not isinstance(event_obj, dict):
+                                            continue
+
+                                        if isinstance(event_obj.get("error"), dict):
+                                            err_obj = event_obj.get("error") or {}
+                                            emsg = str(err_obj.get("message") or err_obj.get("detail") or err_obj)
+                                            try:
+                                                ecode = int(err_obj.get("code") or err_obj.get("status") or 500)
+                                            except Exception:
+                                                ecode = 500
+                                            yield _gemini_error_sse(emsg or "upstream_error", code=ecode)
+                                            return
+
+                                        resp_obj = event_obj.get("response")
+                                        if not isinstance(resp_obj, dict):
+                                            continue
+                                        yield f"data: {json.dumps(resp_obj, ensure_ascii=False)}\n\n".encode("utf-8")
+                                        continue
+
+                                    if line.startswith(b"data:"):
+                                        event_data_lines.append(line[5:].lstrip())
+                                        continue
+
+                            # best-effort flush（极端情况下上游不以空行结尾）
+                            if event_data_lines:
+                                data = b"\n".join(event_data_lines).strip()
+                                if data:
+                                    try:
+                                        event_obj = json.loads(data.decode("utf-8", errors="replace"))
+                                    except Exception:
+                                        event_obj = None
+                                    if isinstance(event_obj, dict):
+                                        sample_logger.maybe_log(data=data, event_obj=event_obj)
+                                        resp_obj = event_obj.get("response")
+                                        if isinstance(resp_obj, dict):
+                                            yield f"data: {json.dumps(resp_obj, ensure_ascii=False)}\n\n".encode(
+                                                "utf-8"
+                                            )
+
+                            return
+
+                        body = await resp.aread()
+                        msg = body.decode("utf-8", errors="replace")[:500]
+
+                        if resp.status_code in (401, 403) and auth_try == 0:
+                            refreshed = await self._try_refresh_account_best_effort(user_id=user_id, account=account)
+                            if refreshed:
+                                continue
+
+                        if resp.status_code in (401, 403):
+                            last_error = f"GeminiCLI 账号鉴权失败（HTTP {resp.status_code}），已自动切换下一个账号"
+                            last_code = resp.status_code
+                            break
+
+                        if resp.status_code == 429:
+                            now = _now_utc()
+                            retry_at = _parse_retry_after(resp.headers, now=now)
+                            if retry_at is None:
+                                retry_at = await self._quota_retry_at_best_effort(
+                                    user_id=user_id,
+                                    account_id=account_id,
+                                    project_id=project_id,
+                                    model=model,
+                                )
+                            next_at = await self._mark_quota_cooldown(
+                                account_id=account_id,
+                                project_id=project_id,
+                                model=model,
+                                retry_at=retry_at,
+                            )
+                            last_error = f"GeminiCLI quota exhausted（model={model}），最早恢复时间：{_iso(next_at)}"
+                            last_code = 429
+                            break
+
+                        if resp.status_code in (408, 500, 502, 503, 504):
+                            last_error = f"GeminiCLI 上游暂时不可用（HTTP {resp.status_code}），已自动切换下一个账号"
+                            last_code = resp.status_code
+                            break
+
+                        yield _gemini_error_sse(msg or "upstream_error", code=resp.status_code)
+                        return
+
+                continue

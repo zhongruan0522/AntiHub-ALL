@@ -23,7 +23,7 @@ from app.models.user import User
 from app.services.plugin_api_service import PluginAPIService
 from app.services.kiro_service import KiroService, UpstreamAPIError
 from app.services.codex_service import CodexService
-from app.services.gemini_cli_api_service import GeminiCLIAPIService
+from app.services.gemini_cli_api_service import GeminiCLIAPIService, GeminiCLIModelCooldownError
 from app.services.zai_tts_service import ZaiTTSService
 from app.services.zai_image_service import ZaiImageService
 from app.services.anthropic_adapter import AnthropicAdapter
@@ -1318,16 +1318,33 @@ async def chat_completions(
 
         if request.stream:
             tracker = SSEUsageTracker()
+            gemini_cli_stream = None
+            gemini_cli_first_chunk = None
+
+            if use_gemini_cli:
+                gemini_cli_stream = gemini_cli_service.openai_chat_completions_stream(
+                    user_id=current_user.id,
+                    request_data=request.model_dump(),
+                )
+                try:
+                    gemini_cli_first_chunk = await gemini_cli_stream.__anext__()
+                except Exception:
+                    try:
+                        await gemini_cli_stream.aclose()
+                    except Exception:
+                        pass
+                    raise
+                tracker.feed(gemini_cli_first_chunk)
 
             async def generate():
                 try:
                     if use_gemini_cli:
-                        async for chunk in gemini_cli_service.openai_chat_completions_stream(
-                            user_id=current_user.id,
-                            request_data=request.model_dump(),
-                        ):
-                            tracker.feed(chunk)
-                            yield chunk
+                        if gemini_cli_first_chunk is not None:
+                            yield gemini_cli_first_chunk
+                        if gemini_cli_stream is not None:
+                            async for chunk in gemini_cli_stream:
+                                tracker.feed(chunk)
+                                yield chunk
                     elif use_kiro:
                         async for chunk in kiro_service.chat_completions_stream(
                             user_id=current_user.id,
@@ -1557,6 +1574,33 @@ async def chat_completions(
         return JSONResponse(
             status_code=e.response.status_code,
             content=upstream_response,
+        )
+    except GeminiCLIModelCooldownError as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        retry_after = e.retry_after_seconds()
+        await UsageLogService.record(
+            user_id=current_user.id,
+            api_key_id=api_key_id,
+            endpoint=endpoint,
+            method=method,
+            model_name=model_name,
+            config_type=effective_config_type,
+            stream=bool(request.stream),
+            success=False,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            error_message=str(e),
+            duration_ms=duration_ms,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(retry_after)},
+            content={
+                "error": {
+                    "message": str(e),
+                    "type": "quota_exhausted",
+                    "code": status.HTTP_429_TOO_MANY_REQUESTS,
+                }
+            },
         )
     except ValueError as e:
         duration_ms = int((time.monotonic() - start_time) * 1000)

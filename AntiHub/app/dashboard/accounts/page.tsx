@@ -268,17 +268,38 @@ export default function AccountsPage() {
   };
 
   const groupGeminiQuotaByTier = (buckets: GeminiCLIQuotaData['buckets']): GeminiTierGroup[] => {
-    const tierMap = new Map<GeminiTier, { fractions: number[]; resetTimes: string[] }>();
+    const pickEarlierResetTime = (current: string | null, next: string | null): string | null => {
+      if (!current) return next;
+      if (!next) return current;
+      const currentTime = new Date(current).getTime();
+      const nextTime = new Date(next).getTime();
+      if (Number.isNaN(currentTime)) return next;
+      if (Number.isNaN(nextTime)) return current;
+      return currentTime <= nextTime ? current : next;
+    };
+
+    const tierMap = new Map<
+      GeminiTier,
+      {
+        fractions: number[];
+        resetTimes: string[];
+        items: Array<{ fraction: number; reset_time: string | null }>;
+      }
+    >();
     const tierOrder: GeminiTier[] = ['Pro', 'Flash', 'Other'];
 
     for (const bucket of buckets) {
       const tier = getGeminiModelTier(bucket.model_id);
       if (!tierMap.has(tier)) {
-        tierMap.set(tier, { fractions: [], resetTimes: [] });
+        tierMap.set(tier, { fractions: [], resetTimes: [], items: [] });
       }
       const group = tierMap.get(tier)!;
       if (bucket.remaining_fraction !== null && bucket.remaining_fraction !== undefined) {
         group.fractions.push(bucket.remaining_fraction);
+        group.items.push({
+          fraction: bucket.remaining_fraction,
+          reset_time: bucket.reset_time ? bucket.reset_time : null,
+        });
       }
       if (bucket.reset_time) {
         group.resetTimes.push(bucket.reset_time);
@@ -295,10 +316,25 @@ export default function AccountsPage() {
         ? Math.min(...group.fractions)
         : null;
 
-      // 取最早的重置时间
-      const earliestReset = group.resetTimes.length > 0
-        ? group.resetTimes.sort()[0]
-        : null;
+      // 重置时间要与 “最小 remaining_fraction” 对应的 bucket 对齐，否则展示会漂（甚至变成当前时间）。
+      let earliestReset: string | null = null;
+      if (minFraction !== null) {
+        const minResetTimes = group.items
+          .filter((it) => it.fraction === minFraction && it.reset_time)
+          .map((it) => it.reset_time as string);
+        if (minResetTimes.length > 0) {
+          earliestReset = minResetTimes.reduce<string | null>(
+            (acc, t) => pickEarlierResetTime(acc, t),
+            null
+          );
+        }
+      }
+      if (!earliestReset) {
+        earliestReset = group.resetTimes.reduce<string | null>(
+          (acc, t) => pickEarlierResetTime(acc, t),
+          null
+        );
+      }
 
       result.push({
         tier,
@@ -2248,7 +2284,14 @@ export default function AccountsPage() {
                                 return `${remaining}%`;
                               };
 
-                              return `${format(account.limit_5h_used_percent, account.limit_5h_reset_at)}/${format(account.limit_week_used_percent, account.limit_week_reset_at)}`;
+                              const hasWeekUsed =
+                                account.limit_week_used_percent !== null && account.limit_week_used_percent !== undefined;
+                              const weekUsed = hasWeekUsed ? account.limit_week_used_percent : account.limit_5h_used_percent;
+                              const weekResetAt = hasWeekUsed
+                                ? account.limit_week_reset_at
+                                : (account.limit_week_reset_at ?? account.limit_5h_reset_at);
+
+                              return `${format(account.limit_5h_used_percent, account.limit_5h_reset_at)}/${format(weekUsed, weekResetAt)}`;
                             })()}
                           </TableCell>
                           <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
@@ -3348,14 +3391,26 @@ export default function AccountsPage() {
                       const w5 = codexWhamData.parsed.rate_limit?.primary_window;
                       const ww = codexWhamData.parsed.rate_limit?.secondary_window;
                       const rows = [
-                        { name: '5 小时限额', w: w5 },
-                        { name: '周限额', w: ww },
+                        { key: '5h' as const, name: '5 小时限额', w: w5 },
+                        { key: 'week' as const, name: '周限额', w: ww },
                       ];
 
                       return rows.map((row) => {
-                        const used = row.w?.used_percent ?? null;
+                        const usedRaw = row.w?.used_percent;
+                        let used: number | null = typeof usedRaw === 'number' ? usedRaw : null;
+                        let resetAtRaw: string | null = row.w?.reset_at ?? null;
+
+                        if (row.key === 'week') {
+                          const fallbackUsed = w5?.used_percent;
+                          if (used === null && typeof fallbackUsed === 'number') {
+                            used = fallbackUsed;
+                          }
+                          if (resetAtRaw === null) {
+                            resetAtRaw = w5?.reset_at ?? null;
+                          }
+                        }
                         const remaining = typeof used === 'number' ? Math.max(0, 100 - used) : null;
-                        const resetAt = row.w?.reset_at ? new Date(row.w.reset_at).toLocaleString('zh-CN') : '-';
+                        const resetAt = resetAtRaw ? new Date(resetAtRaw).toLocaleString('zh-CN') : '-';
 
                         return (
                           <TableRow key={row.name}>
