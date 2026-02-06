@@ -1980,19 +1980,26 @@ export async function importKiroAwsIdcAccount(payload: {
   refreshToken: string;
   clientId: string;
   clientSecret: string;
+  userId?: string;
   accountName?: string;
   isShared?: number;
   region?: string;
 }): Promise<KiroAccount> {
+  const jsonFiles: Array<Record<string, any>> = [
+    { refreshToken: payload.refreshToken },
+    { clientId: payload.clientId, clientSecret: payload.clientSecret },
+  ];
+
+  if (typeof payload.userId === 'string' && payload.userId.trim()) {
+    jsonFiles.push({ user_id: payload.userId.trim() });
+  }
+
   const result = await fetchWithAuth<{ success: boolean; data: KiroAccount }>(
     `${API_BASE_URL}/api/kiro/aws-idc/import`,
     {
       method: 'POST',
       body: JSON.stringify({
-        json_files: [
-          { refreshToken: payload.refreshToken },
-          { clientId: payload.clientId, clientSecret: payload.clientSecret },
-        ],
+        json_files: jsonFiles,
         account_name: payload.accountName,
         is_shared: payload.isShared ?? 0,
         region: payload.region,

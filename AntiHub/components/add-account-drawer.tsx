@@ -112,6 +112,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
   const [kiroImportRefreshToken, setKiroImportRefreshToken] = useState('');
   const [kiroImportClientId, setKiroImportClientId] = useState('');
   const [kiroImportClientSecret, setKiroImportClientSecret] = useState('');
+  const [kiroAwsIdcUserId, setKiroAwsIdcUserId] = useState('');
   const [kiroAwsIdcJsonText, setKiroAwsIdcJsonText] = useState('');
   const [kiroAwsIdcJsonFieldMap, setKiroAwsIdcJsonFieldMap] = useState<{
     refresh_token: string;
@@ -1020,6 +1021,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     const clientId = kiroImportClientId.trim();
     const clientSecret = kiroImportClientSecret.trim();
     const region = kiroAwsIdcRegion.trim();
+    const userId = kiroAwsIdcUserId.trim();
 
     if (!refreshToken || !clientId || !clientSecret) {
       toasterRef.current?.show({
@@ -1036,6 +1038,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
         refreshToken,
         clientId,
         clientSecret,
+        userId: userId || undefined,
         isShared: 0,
         region: region || undefined,
       });
@@ -1916,6 +1919,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
     setKiroImportRefreshToken('');
     setKiroImportClientId('');
     setKiroImportClientSecret('');
+    setKiroAwsIdcUserId('');
     setKiroAwsIdcJsonText('');
     setKiroAwsIdcJsonFieldMap({
       refresh_token: '',
@@ -3490,6 +3494,23 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                         type="password"
                       />
                     </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label htmlFor="kiro-aws-idc-user-id" className="text-base font-semibold">
+                      user_id（可选）
+                    </Label>
+                    <Input
+                      id="kiro-aws-idc-user-id"
+                      placeholder="当服务端提示无法解析 userid 时填写"
+                      value={kiroAwsIdcUserId}
+                      onChange={(e) => setKiroAwsIdcUserId(e.target.value)}
+                      className="h-12 font-mono text-sm"
+                      autoComplete="off"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                      仅在服务端提示 “无法从 token 解析 userid，请在请求体中手动提供 userid” 时需要填写。
+                    </p>
                   </div>
 
                   <div className="space-y-3">
