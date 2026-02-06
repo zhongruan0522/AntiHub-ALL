@@ -53,6 +53,4 @@ psql -X -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$PLUGIN_DB_NAME
 SELECT format('GRANT ALL ON SCHEMA public TO %I', :'plugin_user') \gexec
 SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO %I', :'plugin_user') \gexec
 SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO %I', :'plugin_user') \gexec
-
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
 EOSQL
