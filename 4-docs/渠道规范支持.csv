@@ -1,0 +1,6 @@
+渠道,RE(OAIResponses),OAIChat,Claude,Gemini
+Antigravity,×（后端白名单仅 codex 放行）,√,√,√（路线A：Gemini↔OAIChat 翻译；仅覆盖 text/inlineData 等基础字段）
+Kiro,×（后端白名单仅 codex 放行）,√（需要 beta 或 trust_level≥3）,√（需要 beta）,×（未对接；建议拉黑）
+Qwen,×（后端白名单仅 codex 放行）,√（不支持图片）,√（Anthropic→OAIChat 转换）,×（未对接；建议拉黑）
+CodexCLI,√,√（Chat→RE 兼容层）,×（无需支持）,×（无需支持）
+GeminiCLI,×（后端白名单仅 codex 放行）,√（已知：可能存在思维链/流式输出问题，需观察）,×（无需支持）,√（支持 inlineData/fileData 输入；不支持图片生成模型与 imageConfig）
