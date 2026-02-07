@@ -126,7 +126,14 @@ class AnthropicMessagesRequest(BaseModel):
     # Extended Thinking 支持
     thinking: Optional[Union[Dict[str, Any], bool, str]] = Field(
         None,
-        description="Extended Thinking 配置。可以是 bool、'enabled' 或 dict 格式如 {'type': 'enabled', 'budget_tokens': 10000}"
+        description=(
+            "Extended Thinking 配置。可以是 bool、'enabled'/'adaptive' 或 dict 格式如 "
+            "{'type': 'enabled', 'budget_tokens': 10000} / {'type': 'adaptive'}"
+        ),
+    )
+    output_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Thinking adaptive 输出配置（参考 kiro.rs），例如 {'effort': 'high'|'medium'|'low'}",
     )
 
     # 工具相关

@@ -673,6 +673,91 @@ def _normalize_fn_decl(item: Any) -> Dict[str, Any]:
     return out
 
 
+def _ensure_skip_thought_signature(part: Dict[str, Any]) -> None:
+    """
+    cloudcode-pa 上游会对部分非文本 part 做额外校验；历史上可通过注入一个固定的
+    thoughtSignature 来绕过校验（见 _openai_messages_to_gemini_contents 的做法）。
+
+    这里仅在缺失/为空时注入，避免覆盖用户显式传入的值。
+    """
+    camel = part.get("thoughtSignature")
+    if isinstance(camel, str) and camel.strip():
+        return
+
+    snake = part.get("thought_signature")
+    if isinstance(snake, str) and snake.strip():
+        # 统一 key 名称，避免上游只接受 thoughtSignature
+        part["thoughtSignature"] = snake.strip()
+        part.pop("thought_signature", None)
+        return
+
+    part["thoughtSignature"] = "skip_thought_signature_validator"
+
+
+def _normalize_gemini_content_for_cli(content: Any) -> Any:
+    """
+    Gemini Content 节点（role+parts）做兼容性归一化：
+    - inlineData.mimeType -> inlineData.mime_type（cloudcode-pa 历史使用 snake_case）
+    - fileData.mimeType/fileUri -> fileData.mime_type/file_uri（best-effort）
+    - 对 inlineData / fileData / functionCall 注入 thoughtSignature（best-effort）
+
+    注意：返回新对象，避免修改调用方传入的原始结构。
+    """
+    if not isinstance(content, dict):
+        return content
+
+    out = dict(content)
+    parts_in = content.get("parts")
+    if not isinstance(parts_in, list):
+        return out
+
+    parts_out: List[Any] = []
+    for part in parts_in:
+        if not isinstance(part, dict):
+            parts_out.append(part)
+            continue
+
+        p = dict(part)
+
+        inline_in = p.get("inlineData") or p.get("inline_data")
+        if isinstance(inline_in, dict):
+            inline_out = dict(inline_in)
+            mime = inline_out.get("mime_type") or inline_out.get("mimeType")
+            if isinstance(mime, str) and mime.strip():
+                # cloudcode-pa 历史使用 mime_type；为了兼容，强制输出 snake_case
+                inline_out["mime_type"] = mime.strip()
+            # 彻底去掉 camelCase，避免上游严格校验时报错
+            inline_out.pop("mimeType", None)
+            p.pop("inline_data", None)
+            p["inlineData"] = inline_out
+            _ensure_skip_thought_signature(p)
+
+        file_in = p.get("fileData") or p.get("file_data")
+        if isinstance(file_in, dict):
+            file_out = dict(file_in)
+            mime = file_out.get("mime_type") or file_out.get("mimeType")
+            if isinstance(mime, str) and mime.strip():
+                file_out["mime_type"] = mime.strip()
+            file_out.pop("mimeType", None)
+
+            uri = file_out.get("file_uri") or file_out.get("fileUri")
+            if isinstance(uri, str) and uri.strip():
+                file_out["file_uri"] = uri.strip()
+            file_out.pop("fileUri", None)
+            p.pop("file_data", None)
+            p["fileData"] = file_out
+            _ensure_skip_thought_signature(p)
+
+        fn_call = p.get("functionCall") or p.get("function_call")
+        if isinstance(fn_call, dict):
+            _ensure_skip_thought_signature(p)
+
+        parts_out.append(p)
+
+    out["parts"] = parts_out
+    return out
+
+
 def _normalize_gemini_request_to_cli_request(model: str, request_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Gemini v1beta request -> GeminiCLI request（不含 project）。
@@ -716,6 +801,15 @@ def _normalize_gemini_request_to_cli_request(model: str, request_data: Dict[str,
             tools_out.append(t)
 
         req_obj["tools"] = tools_out
+
+    # cloudcode-pa 对多模态（inlineData/fileData）字段存在 snake_case 历史差异，且
+    # 对部分非文本 part 需要 thoughtSignature；这里做 best-effort 归一化。
+    if "systemInstruction" in req_obj:
+        req_obj["systemInstruction"] = _normalize_gemini_content_for_cli(req_obj.get("systemInstruction"))
+
+    contents_in = req_obj.get("contents")
+    if isinstance(contents_in, list):
+        req_obj["contents"] = [_normalize_gemini_content_for_cli(x) for x in contents_in]
 
     _ensure_default_safety_settings(req_obj)
     return {"project": "", "request": req_obj, "model": model}

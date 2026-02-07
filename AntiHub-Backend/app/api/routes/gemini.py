@@ -1,7 +1,7 @@
 """
 Gemini 兼容 API（v1beta）
 
-- config_type=gemini-cli：仅支持文本类 generateContent / streamGenerateContent
+- config_type=gemini-cli：支持 generateContent / streamGenerateContent（文本 + 多模态输入 inlineData/fileData）；不支持图片生成模型与 generationConfig.imageConfig（图片生成配置）
 - config_type=zai-image：仅支持本地图片模型（LOCAL_IMAGE_MODELS）生成
 - config_type=antigravity：Gemini v1beta <-> OpenAI Chat 翻译闭环（路线A）
 """
@@ -162,7 +162,7 @@ def _resolve_config_type(current_user: User, raw_request: Request) -> Optional[s
 @router.post(
     "/models/{model}:generateContent",
     summary="Gemini v1beta generateContent",
-    description="Gemini 兼容 generateContent：gemini-cli（文本）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）/ antigravity（路线A：Gemini<->OpenAI Chat 翻译）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
+    description="Gemini 兼容 generateContent：gemini-cli（文本 + inlineData/fileData 多模态输入；不支持图片生成模型与 generationConfig.imageConfig）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）/ antigravity（路线A：Gemini<->OpenAI Chat 翻译）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
 )
 async def generate_content(
     model: str,
@@ -312,14 +312,14 @@ async def generate_content(
 
             return result
 
-        # gemini-cli：拒绝图片生成模型（但允许多模态输入 inlineData）
+        # gemini-cli：拒绝图片生成模型（但允许多模态输入 inlineData/fileData）
         normalized_model = (model or "").strip().lower()
         if normalized_model in LOCAL_IMAGE_MODELS or "image" in normalized_model:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="gemini-cli 不支持图片模型/图片生成",
             )
-        # 注意：gemini-cli 支持多模态输入（inlineData），但不支持图片生成配置
+        # 注意：gemini-cli 支持多模态输入（inlineData/fileData），但不支持图片生成配置
         if request.generationConfig and request.generationConfig.imageConfig:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -475,7 +475,7 @@ async def generate_content(
 @router.post(
     "/models/{model}:streamGenerateContent",
     summary="Gemini v1beta streamGenerateContent",
-    description="Gemini 兼容 streamGenerateContent：gemini-cli（文本）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）/ antigravity（路线A：Gemini<->OpenAI Chat 翻译）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
+    description="Gemini 兼容 streamGenerateContent：gemini-cli（文本 + inlineData/fileData 多模态输入；不支持图片生成模型与 generationConfig.imageConfig）/ zai-image（图片，仅LOCAL_IMAGE_MODELS）/ antigravity（路线A：Gemini<->OpenAI Chat 翻译）。支持JWT token、Bearer API key或x-goog-api-key标头认证。"
 )
 async def stream_generate_content(
     model: str,
@@ -578,7 +578,7 @@ async def stream_generate_content(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="gemini-cli 不支持图片模型/图片生成",
                 )
-            # 注意：gemini-cli 支持多模态输入（inlineData），但不支持图片生成配置
+            # 注意：gemini-cli 支持多模态输入（inlineData/fileData），但不支持图片生成配置
             if request.generationConfig and request.generationConfig.imageConfig:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

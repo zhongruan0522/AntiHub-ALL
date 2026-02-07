@@ -28,7 +28,7 @@ class KiroAnthropicConverter:
         "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
         "claude-sonnet-4-20250514": "claude-sonnet-4",
         "claude-opus-4-5-20251101": "claude-opus-4.5",
-        "claude-opus-4-6-20260205": "claude-opus-4-6",
+        "claude-opus-4-6": "claude-opus-4-6",
         "claude-haiku-4-5-20251001": "claude-haiku-4.5",
     }
 
@@ -50,6 +50,14 @@ class KiroAnthropicConverter:
 
         model_id = cls._map_model(request.model)
         thinking_cfg = getattr(request, "thinking", None)
+        # output_config 用于 adaptive thinking（参考 kiro.rs）
+        output_config = getattr(request, "output_config", None) or getattr(
+            request, "outputConfig", None
+        )
+        if output_config is None:
+            extra = getattr(request, "model_extra", None)
+            if isinstance(extra, dict):
+                output_config = extra.get("output_config") or extra.get("outputConfig")
 
         conversation_id = cls._extract_session_id(getattr(getattr(request, "metadata", None), "user_id", None)) or str(
             uuid.uuid4()
@@ -61,7 +69,7 @@ class KiroAnthropicConverter:
 
         # 2) history（系统消息 + 除最后一条消息外的历史）
         history: List[Dict[str, Any]] = []
-        cls._append_system_history(history, request, model_id, thinking_cfg)
+        cls._append_system_history(history, request, model_id, thinking_cfg, output_config)
 
         # messages 的最后一条作为 currentMessage，前面的都进入 history
         for msg in request.messages[:-1]:
@@ -138,7 +146,10 @@ class KiroAnthropicConverter:
         if "sonnet" in lower:
             return "claude-sonnet-4.5"
         if "opus" in lower:
-            return "claude-opus-4.5"
+            # 对齐 kiro.rs：非显式 4.5 的 opus 统一视为 4.6
+            if "4-5" in lower or "4.5" in lower:
+                return "claude-opus-4.5"
+            return "claude-opus-4-6"
         if "haiku" in lower:
             return "claude-haiku-4.5"
 
@@ -171,6 +182,7 @@ class KiroAnthropicConverter:
         request: AnthropicMessagesRequest,
         model_id: str,
         thinking_cfg: Any,
+        output_config: Any,
     ) -> None:
         system = getattr(request, "system", None)
         system_text = ""
@@ -186,9 +198,9 @@ class KiroAnthropicConverter:
 
         if is_thinking_enabled(thinking_cfg):
             if system_text:
-                system_text = inject_thinking_hint(system_text, thinking_cfg)
+                system_text = inject_thinking_hint(system_text, thinking_cfg, output_config=output_config)
             else:
-                system_text = generate_thinking_hint(thinking_cfg)
+                system_text = generate_thinking_hint(thinking_cfg, output_config=output_config)
 
         if not system_text:
             return

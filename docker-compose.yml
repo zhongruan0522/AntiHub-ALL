@@ -32,6 +32,17 @@ services:
       # Redis：默认使用 compose 自带 redis；如你有现成的 Redis，可在 .env 里覆盖
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
 
+      # Codex（可选）
+      CODEX_SUPPORTED_MODELS: ${CODEX_SUPPORTED_MODELS:-}
+      CODEX_API_BASE_URL: ${CODEX_API_BASE_URL:-https://chatgpt.com/backend-api/codex}
+      CODEX_PROXY_URL: ${CODEX_PROXY_URL:-}
+
+      # Gemini CLI OAuth（可选）
+      GEMINI_CLI_OAUTH_CLIENT_ID: ${GEMINI_CLI_OAUTH_CLIENT_ID:-681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com}
+      GEMINI_CLI_OAUTH_CLIENT_SECRET: ${GEMINI_CLI_OAUTH_CLIENT_SECRET:-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}
+      GEMINI_CLI_OAUTH_REDIRECT_URI: ${GEMINI_CLI_OAUTH_REDIRECT_URI:-http://localhost:8085/oauth2callback}
+      GEMINI_CLI_OAUTH_SCOPE: ${GEMINI_CLI_OAUTH_SCOPE:-https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile}
+
       # 内部互联（已预置，不需要你再配“互相链接”的环境变量）
       PLUGIN_API_BASE_URL: http://antihub-plugin:8045
       PLUGIN_API_ADMIN_KEY: ${PLUGIN_ADMIN_API_KEY}
@@ -51,6 +62,7 @@ services:
       # 管理员账号配置（首次启动时自动创建）
       # ZAI Image (optional)
       ZAI_IMAGE_BASE_URL: ${ZAI_IMAGE_BASE_URL:-https://image.z.ai}
+      ZAI_IMAGE_USER_AGENT: ${ZAI_IMAGE_USER_AGENT:-}
 
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
@@ -77,6 +89,9 @@ services:
       PORT: 8045
       # Kiro IDE UA 版本（可选；默认由代码内置 0.9.2）
       KIRO_IDE_VERSION: ${KIRO_IDE_VERSION:-}
+      # Kiro usage limits 同步节流（可选；默认 300s；设置为 0 可关闭）
+      KIRO_USAGE_LIMITS_SYNC_INTERVAL_SECONDS: ${KIRO_USAGE_LIMITS_SYNC_INTERVAL_SECONDS:-300}
+      KIRO_USAGE_LIMITS_429_COOLDOWN_SECONDS: ${KIRO_USAGE_LIMITS_429_COOLDOWN_SECONDS:-300}
 
       # 外部依赖（由你自己提供/维护）
       DB_HOST: ${PLUGIN_DB_HOST:-postgres}
