@@ -8,7 +8,7 @@
     "start": "node src/server/index.js",
     "login": "node scripts/oauth-server.js",
     "dev": "node --watch src/server/index.js",
-    "test": "node test/gemini_sse_parser.test.js"
+    "test": "node test/gemini_sse_parser.test.js && node test/kiro_usage_limits_parser.test.js"
   },
   "keywords": [
     "antigravity",

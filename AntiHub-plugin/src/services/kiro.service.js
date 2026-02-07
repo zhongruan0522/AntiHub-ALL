@@ -2,6 +2,7 @@ import https from 'https';
 import crypto from 'crypto';
 import logger from '../utils/logger.js';
 import redisService from './redis.service.js';
+import parseKiroUsageLimits from './kiro_usage_limits_parser.js';
 
 /**
  * Kiro OAuth Redis Key前缀
@@ -1332,7 +1333,7 @@ class KiroService {
     logger.info(`[${requestId}] 开始获取Kiro使用量信息`);
     return new Promise((resolve, reject) => {
       const params = new URLSearchParams({
-        isEmailRequired: true,
+        isEmailRequired: 'true',
         origin: 'AI_EDITOR',
         resourceType: 'AGENTIC_REQUEST'
       });
@@ -1395,90 +1396,7 @@ class KiroService {
    * @returns {Object} 解析后的数据
    */
   parseUsageLimits(data) {
-    const result = {
-      email: data.userInfo?.email || null,
-      userid: data.userInfo?.userId || null,
-      subscription: data.subscriptionInfo?.subscriptionTitle || 'unknown',
-      subscription_type: data.subscriptionInfo?.type || null,
-      reset_date: data.nextDateReset ? new Date(data.nextDateReset * 1000).toISOString() : null,
-      current_usage: 0,
-      usage_limit: 0,
-      // 免费试用相关字段
-      free_trial_status: false, // 是否激活（布尔值）
-      free_trial_usage: null,
-      free_trial_expiry: null,
-      free_trial_limit: 0,
-      // bonus相关字段（只包含bonuses数组中的bonus，不包含免费试用）
-      bonus_usage: 0,
-      bonus_limit: 0,
-      bonus_available: 0,
-      bonus_details: []
-    };
-
-    // 查找CREDIT类型的使用量
-    for (const breakdown of (data.usageBreakdownList || [])) {
-      if (breakdown.resourceType === 'CREDIT') {
-        result.current_usage = breakdown.currentUsageWithPrecision || breakdown.currentUsage || 0;
-        result.usage_limit = breakdown.usageLimitWithPrecision || breakdown.usageLimit || 0;
-
-        // 处理免费试用信息（无论状态如何都返回数据）
-        if (breakdown.freeTrialInfo) {
-          // 是否激活（布尔值）
-          result.free_trial_status = breakdown.freeTrialInfo.freeTrialStatus === 'ACTIVE';
-          result.free_trial_usage = breakdown.freeTrialInfo.currentUsageWithPrecision ||
-                                     breakdown.freeTrialInfo.currentUsage || 0;
-          result.free_trial_limit = breakdown.freeTrialInfo.usageLimitWithPrecision ||
-                                     breakdown.freeTrialInfo.usageLimit || 0;
-          if (breakdown.freeTrialInfo.freeTrialExpiry) {
-            // freeTrialExpiry是Unix时间戳（秒，可能带小数），需要乘以1000转为毫秒
-            result.free_trial_expiry = new Date(breakdown.freeTrialInfo.freeTrialExpiry * 1000).toISOString();
-          }
-        }
-
-        let totalBonusUsage = 0;
-        let totalBonusLimit = 0;
-        const bonusDetails = [];
-
-        // 处理bonuses数组（不包含免费试用，免费试用是单独的freeTrialInfo）
-        if (breakdown.bonuses && Array.isArray(breakdown.bonuses)) {
-          for (const bonus of breakdown.bonuses) {
-            if (bonus.status === 'ACTIVE') {
-              const bonusUsage = bonus.currentUsage || 0;
-              const bonusLimit = bonus.usageLimit || 0;
-              
-              totalBonusUsage += bonusUsage;
-              totalBonusLimit += bonusLimit;
-              
-              bonusDetails.push({
-                type: 'bonus',
-                name: bonus.displayName || bonus.bonusCode,
-                code: bonus.bonusCode,
-                description: bonus.description,
-                usage: bonusUsage,
-                limit: bonusLimit,
-                available: Math.max(0, bonusLimit - bonusUsage),
-                status: bonus.status,
-                expires_at: bonus.expiresAt
-                  ? new Date(bonus.expiresAt * 1000).toISOString()
-                  : null,
-                redeemed_at: bonus.redeemedAt
-                  ? new Date(bonus.redeemedAt * 1000).toISOString()
-                  : null
-              });
-            }
-          }
-        }
-
-        result.bonus_usage = totalBonusUsage;
-        result.bonus_limit = totalBonusLimit;
-        result.bonus_available = Math.max(0, totalBonusLimit - totalBonusUsage);
-        result.bonus_details = bonusDetails;
-        
-        break;
-      }
-    }
-
-    return result;
+    return parseKiroUsageLimits(data);
   }
 
   /**
