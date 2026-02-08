@@ -349,6 +349,7 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
   // 走 Next.js 同域 API，由服务端设置 httpOnly cookies（用于 /dashboard middleware 鉴权）
   const response = await fetch(`/api/auth/login`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },

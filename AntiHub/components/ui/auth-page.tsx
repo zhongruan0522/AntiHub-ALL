@@ -29,9 +29,24 @@ export function AuthPage() {
 	// 检查是否已登录，如果已登录则跳转到控制台
 	useEffect(() => {
 		if (isAuthenticated()) {
-			router.push('/dashboard');
+			router.replace('/dashboard');
 		}
 	}, [router]);
+
+	const navigateToDashboard = () => {
+		// 优先使用客户端路由跳转，避免产生 /auth 历史记录
+		router.replace('/dashboard');
+
+		// 兜底：少数情况下（通常是 cookie 写入/中间件校验时序）会被弹回 /auth，
+		// 这时强制一次整页跳转，效果等同于用户手动刷新后再进入。
+		if (typeof window !== 'undefined') {
+			window.setTimeout(() => {
+				if (!window.location.pathname.startsWith('/dashboard')) {
+					window.location.assign('/dashboard');
+				}
+			}, 300);
+		}
+	};
 
 	// 检查 URL 中是否有错误参数
 	useEffect(() => {
@@ -49,7 +64,7 @@ export function AuthPage() {
 
     try {
       await login({ username, password });
-      router.push('/dashboard');
+      navigateToDashboard();
     } catch (err) {
       setError(err instanceof Error ? err.message : '登录失败，请稍后重试');
     } finally {

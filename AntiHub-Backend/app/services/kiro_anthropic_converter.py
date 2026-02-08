@@ -28,7 +28,9 @@ class KiroAnthropicConverter:
         "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
         "claude-sonnet-4-20250514": "claude-sonnet-4",
         "claude-opus-4-5-20251101": "claude-opus-4.5",
-        "claude-opus-4-6": "claude-opus-4-6",
+        # Compat: accept both 4.6 and 4-6 spellings (always emit claude-opus-4.6)
+        "claude-opus-4-6-20260205": "claude-opus-4.6",
+        "claude-opus-4-6": "claude-opus-4.6",
         "claude-haiku-4-5-20251001": "claude-haiku-4.5",
     }
 
@@ -149,7 +151,7 @@ class KiroAnthropicConverter:
             # 对齐 kiro.rs：非显式 4.5 的 opus 统一视为 4.6
             if "4-5" in lower or "4.5" in lower:
                 return "claude-opus-4.5"
-            return "claude-opus-4-6"
+            return "claude-opus-4.6"
         if "haiku" in lower:
             return "claude-haiku-4.5"
 
