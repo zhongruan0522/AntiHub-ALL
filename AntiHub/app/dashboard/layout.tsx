@@ -86,10 +86,10 @@ export default function DashboardLayout({
       }
     >
       <AppSidebar variant="inset" />
-      <SidebarInset className="overflow-hidden">
+      <SidebarInset className="overflow-clip">
         <SiteHeader />
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="@container/main flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+          <div className="@container/main flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-y-contain">
             {children}
           </div>
         </div>
