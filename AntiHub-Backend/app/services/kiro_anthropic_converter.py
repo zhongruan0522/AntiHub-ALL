@@ -93,7 +93,9 @@ class KiroAnthropicConverter:
         current_text, current_images, current_tool_results = cls._process_user_content(getattr(last, "content", None))
 
         # 5) 过滤 tool_use/tool_result 的配对，避免孤立/重复导致 Kiro 400
-        validated_tool_results = cls._validate_tool_pairing(history, current_tool_results)
+        validated_tool_results, orphaned_tool_use_ids = cls._validate_tool_pairing(history, current_tool_results)
+        # Kiro upstream rejects orphaned toolUses (HTTP 400: "Improperly formed request").
+        cls._remove_orphaned_tool_uses_from_history(history, orphaned_tool_use_ids)
 
         # 如果 tool_result 被过滤（孤立/重复），把它的内容降级拼到用户文本里，避免 currentMessage 变成空内容。
         current_text = cls._append_orphan_tool_result_text(current_text, current_tool_results, validated_tool_results)
@@ -578,7 +580,7 @@ class KiroAnthropicConverter:
     @classmethod
     def _validate_tool_pairing(
         cls, history: List[Dict[str, Any]], tool_results: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], set[str]]:
         # 1) 收集 history 中的所有 toolUseId（来自 assistant.toolUses）
         all_tool_use_ids = set()
         history_tool_result_ids = set()
@@ -628,4 +630,45 @@ class KiroAnthropicConverter:
         for orphan_id in sorted(unpaired):
             logger.warning("检测到孤立的 tool_use（找不到对应 tool_result）：toolUseId=%s", orphan_id)
 
-        return filtered
+        return filtered, unpaired
+
+    @staticmethod
+    def _remove_orphaned_tool_uses_from_history(history: List[Dict[str, Any]], orphaned_ids: set[str]) -> None:
+        """
+        Remove orphaned tool uses from history.
+
+        Kiro/CodeWhisperer validates that every `assistantResponseMessage.toolUses[*].toolUseId`
+        has a corresponding toolResult somewhere later in the conversation. If we send orphaned
+        toolUses, upstream may return HTTP 400 with "Improperly formed request".
+
+        This mirrors the reference fix in `2-参考项目/kiro.rs` (commit c0d5085).
+        """
+        if not orphaned_ids:
+            return
+
+        removed = 0
+        for entry in history:
+            assistant = entry.get("assistantResponseMessage")
+            if not isinstance(assistant, dict):
+                continue
+
+            tool_uses = assistant.get("toolUses")
+            if not isinstance(tool_uses, list) or not tool_uses:
+                continue
+
+            new_tool_uses: List[Any] = []
+            for tu in tool_uses:
+                if isinstance(tu, dict):
+                    tid = tu.get("toolUseId")
+                    if isinstance(tid, str) and tid in orphaned_ids:
+                        removed += 1
+                        continue
+                new_tool_uses.append(tu)
+
+            if new_tool_uses:
+                assistant["toolUses"] = new_tool_uses
+            else:
+                assistant.pop("toolUses", None)
+
+        if removed:
+            logger.info("Removed %d orphaned toolUses from history", removed)
