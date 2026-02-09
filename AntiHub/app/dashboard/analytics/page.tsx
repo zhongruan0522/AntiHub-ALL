@@ -9,6 +9,7 @@ import {
   getKiroAccountConsumption,
   getRequestUsageStats,
   getRequestUsageLogs,
+  getUiDefaultChannels,
   type UserQuotaItem,
   type QuotaConsumption,
   type KiroConsumptionStats,
@@ -64,12 +65,31 @@ export default function AnalyticsPage() {
   const [antigravityTotalRecords, setAntigravityTotalRecords] = useState(0); // Antigravity 总记录数
   const [requestTotalRecords, setRequestTotalRecords] = useState(0);
   const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image'>('antigravity');
+  const [isTabInitialized, setIsTabInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const pageSize = 50;
 
   useEffect(() => {
+    const init = async () => {
+      try {
+        const settings = await getUiDefaultChannels();
+        if (settings.usage_default_channel) {
+          setActiveTab(settings.usage_default_channel);
+        }
+      } catch {
+        // 不阻塞消耗日志页面：设置读取失败时保持默认渠道
+      } finally {
+        setIsTabInitialized(true);
+      }
+    };
+
+    init();
+  }, []);
+
+  useEffect(() => {
+    if (!isTabInitialized) return;
     loadData();
-  }, [activeTab, currentPage, antigravityCurrentPage, requestCurrentPage]);
+  }, [isTabInitialized, activeTab, currentPage, antigravityCurrentPage, requestCurrentPage]);
 
   const loadData = async () => {
     setIsLoading(true);

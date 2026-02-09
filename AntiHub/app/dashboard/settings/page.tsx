@@ -11,13 +11,17 @@ import {
   getCurrentUser,
   getKiroSubscriptionModelRules,
   getOpenAIModels,
+  getUiDefaultChannels,
   saveCodexFallbackConfig,
+  saveUiDefaultChannels,
   upsertKiroSubscriptionModelRule,
   clearCodexFallbackConfig,
+  type AccountsDefaultChannel,
   type KiroSubscriptionModelRule,
   type OpenAIModel,
   type PluginAPIKey,
   type UserResponse,
+  type UsageDefaultChannel,
 } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -102,6 +106,12 @@ export default function SettingsPage() {
   const [showCodexFallbackKey, setShowCodexFallbackKey] = useState(false);
   const [isCodexFallbackRevealing, setIsCodexFallbackRevealing] = useState(false);
 
+  // 面板默认渠道（账户管理 / 消耗日志）
+  const [accountsDefaultChannel, setAccountsDefaultChannel] = useState<AccountsDefaultChannel | null>(null);
+  const [usageDefaultChannel, setUsageDefaultChannel] = useState<UsageDefaultChannel | null>(null);
+  const [isUiDefaultChannelsLoading, setIsUiDefaultChannelsLoading] = useState(false);
+  const [isUiDefaultChannelsSaving, setIsUiDefaultChannelsSaving] = useState(false);
+
   useEffect(() => {
     const base = getPublicApiBaseUrl();
     if (/^https?:\/\//i.test(base)) return;
@@ -121,6 +131,24 @@ export default function SettingsPage() {
     } catch (err) {
       // 如果没有 API Key,这是正常的
       setApiKeys([]);
+    }
+  };
+
+  const loadUiDefaultChannels = async () => {
+    setIsUiDefaultChannelsLoading(true);
+    try {
+      const data = await getUiDefaultChannels();
+      setAccountsDefaultChannel(data.accounts_default_channel ?? null);
+      setUsageDefaultChannel(data.usage_default_channel ?? null);
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '加载失败',
+        message: err instanceof Error ? err.message : '获取默认渠道设置失败',
+        variant: 'warning',
+        position: 'top-right',
+      });
+    } finally {
+      setIsUiDefaultChannelsLoading(false);
     }
   };
 
@@ -291,6 +319,8 @@ export default function SettingsPage() {
 
         const userData = await getCurrentUser();
         setCurrentUser(userData);
+
+        await loadUiDefaultChannels();
 
         await loadCodexFallback();
 
@@ -513,6 +543,35 @@ export default function SettingsPage() {
     }
 
     handleCopyKey(raw);
+  };
+
+  const handleSaveUiDefaultChannels = async () => {
+    setIsUiDefaultChannelsSaving(true);
+    try {
+      const data = await saveUiDefaultChannels({
+        accounts_default_channel: accountsDefaultChannel,
+        usage_default_channel: usageDefaultChannel,
+      });
+
+      setAccountsDefaultChannel(data.accounts_default_channel ?? null);
+      setUsageDefaultChannel(data.usage_default_channel ?? null);
+
+      toasterRef.current?.show({
+        title: '已保存',
+        message: '默认渠道设置已更新',
+        variant: 'success',
+        position: 'top-right',
+      });
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '保存失败',
+        message: err instanceof Error ? err.message : '保存默认渠道设置失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+    } finally {
+      setIsUiDefaultChannelsSaving(false);
+    }
   };
 
   const handleSaveCodexFallback = async () => {
@@ -773,6 +832,101 @@ export default function SettingsPage() {
                   <p className="font-sm text-muted-foreground">你需要提供有效的 API 密钥才能访问此端点。要获取模型列表，你的账户内至少需要添加一个可用账号。我们支持 OpenAI 格式或 Anthropic 格式的消息。</p>
                 </div>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 默认渠道（账户管理 / 消耗日志） */}
+        <Card className="mt-6">
+          <CardHeader>
+            <div className="space-y-1.5">
+              <CardTitle className="flex items-center gap-2">
+                默认渠道
+              </CardTitle>
+              <CardDescription>
+                用于“账户管理”和“消耗日志”页面初次进入时默认选中的渠道（两个面板可单独配置）。
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">账户管理</Label>
+                <Select
+                  value={accountsDefaultChannel ?? '__unset__'}
+                  onValueChange={(value) =>
+                    setAccountsDefaultChannel(value === '__unset__' ? null : (value as AccountsDefaultChannel))
+                  }
+                >
+                  <SelectTrigger className="w-full" disabled={isUiDefaultChannelsLoading || isUiDefaultChannelsSaving}>
+                    <SelectValue placeholder="未设置（默认 Antigravity）" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__unset__">未设置（默认 Antigravity）</SelectItem>
+                    <SelectItem value="antigravity">Antigravity</SelectItem>
+                    <SelectItem value="kiro">Kiro</SelectItem>
+                    <SelectItem value="qwen">Qwen</SelectItem>
+                    <SelectItem value="codex">Codex</SelectItem>
+                    <SelectItem value="gemini">GeminiCLI</SelectItem>
+                    <SelectItem value="zai-tts">ZAI TTS</SelectItem>
+                    <SelectItem value="zai-image">ZAI Image</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">消耗日志</Label>
+                <Select
+                  value={usageDefaultChannel ?? '__unset__'}
+                  onValueChange={(value) =>
+                    setUsageDefaultChannel(value === '__unset__' ? null : (value as UsageDefaultChannel))
+                  }
+                >
+                  <SelectTrigger className="w-full" disabled={isUiDefaultChannelsLoading || isUiDefaultChannelsSaving}>
+                    <SelectValue placeholder="未设置（默认 Antigravity）" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__unset__">未设置（默认 Antigravity）</SelectItem>
+                    <SelectItem value="antigravity">Antigravity</SelectItem>
+                    <SelectItem value="kiro">Kiro</SelectItem>
+                    <SelectItem value="qwen">Qwen</SelectItem>
+                    <SelectItem value="codex">Codex</SelectItem>
+                    <SelectItem value="gemini-cli">GeminiCLI</SelectItem>
+                    <SelectItem value="zai-tts">ZAI TTS</SelectItem>
+                    <SelectItem value="zai-image">ZAI Image</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={loadUiDefaultChannels}
+                disabled={isUiDefaultChannelsLoading || isUiDefaultChannelsSaving}
+              >
+                {isUiDefaultChannelsLoading ? (
+                  <>
+                    <MorphingSquare className="size-4 mr-2" />
+                    刷新中...
+                  </>
+                ) : (
+                  '刷新'
+                )}
+              </Button>
+              <Button
+                onClick={handleSaveUiDefaultChannels}
+                disabled={isUiDefaultChannelsLoading || isUiDefaultChannelsSaving}
+              >
+                {isUiDefaultChannelsSaving ? (
+                  <>
+                    <MorphingSquare className="size-4 mr-2" />
+                    保存中...
+                  </>
+                ) : (
+                  '保存'
+                )}
+              </Button>
             </div>
           </CardContent>
         </Card>

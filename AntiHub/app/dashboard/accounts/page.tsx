@@ -31,6 +31,7 @@ import {
   updateCodexAccountName,
   refreshCodexAccount,
   getCodexWhamUsage,
+  getUiDefaultChannels,
   getGeminiCLIAccounts,
   getGeminiCLIAccountCredentials,
   getGeminiCLIAccountQuota,
@@ -447,7 +448,20 @@ export default function AccountsPage() {
   };
 
   useEffect(() => {
-    loadAccounts();
+    const init = async () => {
+      try {
+        const settings = await getUiDefaultChannels();
+        if (settings.accounts_default_channel) {
+          setActiveTab(settings.accounts_default_channel);
+        }
+      } catch {
+        // 不阻塞账户管理页面：设置读取失败时保持默认渠道
+      } finally {
+        loadAccounts();
+      }
+    };
+
+    init();
 
     // 监听账号添加事件
     const handleAccountAdded = () => {

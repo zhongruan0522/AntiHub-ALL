@@ -19,6 +19,7 @@ GET /api/codex/accounts/{account_id},获取单个 Codex 账号详情,后端:code
 GET /api/codex/accounts/{account_id}/credentials,导出 Codex 账号凭证（敏感）,后端:codex.export_codex_account_credentials；主要调用:service.export_account_credentials；对接:前端/管理后台
 GET /api/codex/accounts/{account_id}/wham-usage,查询 Codex 限额窗口（wham/usage）,后端:codex.get_codex_wham_usage；主要调用:service.get_account_wham_usage；对接:前端/管理后台
 GET /api/codex/fallback,获取 CodexCLI 兜底服务配置,后端:codex.get_codex_fallback_config；主要调用:service.get_fallback_config；对接:前端/管理后台
+GET /api/settings/ui-default-channels,获取默认渠道设置（账户管理/消耗日志）,后端:settings.get_ui_default_channels；主要调用:UserSettingRepository.get_by_user_id；对接:前端/管理后台
 GET /api/codex/models,获取 Codex 模型列表,后端:codex.list_codex_models；主要调用:service.get_models；对接:前端/管理后台
 GET /api/gemini-cli/accounts,获取 GeminiCLI 账号列表,后端:gemini_cli.list_gemini_cli_accounts；主要调用:service.list_accounts；对接:前端/管理后台
 GET /api/gemini-cli/accounts/{account_id},获取单个 GeminiCLI 账号详情,后端:gemini_cli.get_gemini_cli_account；主要调用:service.get_account；对接:前端/管理后台
@@ -107,6 +108,7 @@ PUT /api/codex/accounts/{account_id}/name,更新 Codex 账号名称,后端:codex
 PUT /api/codex/accounts/{account_id}/quota,手动更新 Codex 账号剩余额度（落库）,后端:codex.update_codex_account_quota；主要调用:service.update_account_quota；对接:前端/管理后台
 PUT /api/codex/accounts/{account_id}/status,启用/禁用 Codex 账号,后端:codex.update_codex_account_status；主要调用:service.update_account_status；对接:前端/管理后台
 PUT /api/codex/fallback,保存 CodexCLI 兜底服务配置,后端:codex.upsert_codex_fallback_config；主要调用:service.upsert_fallback_config；对接:前端/管理后台
+PUT /api/settings/ui-default-channels,保存默认渠道设置（账户管理/消耗日志）,后端:settings.upsert_ui_default_channels；主要调用:UserSettingRepository.update/create；对接:前端/管理后台
 PUT /api/gemini-cli/accounts/{account_id}/name,更新 GeminiCLI 账号名称,后端:gemini_cli.update_gemini_cli_account_name；主要调用:service.update_account_name；对接:前端/管理后台
 PUT /api/gemini-cli/accounts/{account_id}/project,更新 GeminiCLI 账号 GCP Project ID,后端:gemini_cli.update_gemini_cli_account_project；主要调用:service.update_account_project；对接:前端/管理后台
 PUT /api/gemini-cli/accounts/{account_id}/status,启用/禁用 GeminiCLI 账号,后端:gemini_cli.update_gemini_cli_account_status；主要调用:service.update_account_status；对接:前端/管理后台

@@ -2456,6 +2456,50 @@ export async function clearCodexFallbackConfig(): Promise<CodexFallbackConfig> {
   return result.data;
 }
 
+// ==================== UI 默认渠道设置 ====================
+
+export type AccountsDefaultChannel =
+  | 'antigravity'
+  | 'kiro'
+  | 'qwen'
+  | 'codex'
+  | 'gemini'
+  | 'zai-tts'
+  | 'zai-image';
+
+export type UsageDefaultChannel =
+  | 'antigravity'
+  | 'kiro'
+  | 'qwen'
+  | 'codex'
+  | 'gemini-cli'
+  | 'zai-tts'
+  | 'zai-image';
+
+export interface UiDefaultChannels {
+  accounts_default_channel: AccountsDefaultChannel | null;
+  usage_default_channel: UsageDefaultChannel | null;
+}
+
+export async function getUiDefaultChannels(): Promise<UiDefaultChannels> {
+  const result = await fetchWithAuth<{ success: boolean; data: UiDefaultChannels }>(
+    `${API_BASE_URL}/api/settings/ui-default-channels`,
+    { method: 'GET' }
+  );
+  return result.data;
+}
+
+export async function saveUiDefaultChannels(payload: Partial<UiDefaultChannels>): Promise<UiDefaultChannels> {
+  const result = await fetchWithAuth<{ success: boolean; data: UiDefaultChannels }>(
+    `${API_BASE_URL}/api/settings/ui-default-channels`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }
+  );
+  return result.data;
+}
+
 // ==================== GeminiCLI 账号管理相关 API ====================
 
 export interface GeminiCLIAccount {
