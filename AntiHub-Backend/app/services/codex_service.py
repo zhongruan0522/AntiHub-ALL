@@ -67,18 +67,22 @@ CODEX_MODEL_ALIASES = {
     # Common client aliases (e.g. CLIProxyAPI example config)
     "codex-latest": "gpt-5.3-codex",
     "codex-mini": "gpt-5-codex-mini",
+    # sub2api / CLIProxyAPI ecosystem alias
+    "codex-mini-latest": "gpt-5-codex-mini",
 }
 
 CODEX_API_BASE_URL = (os.getenv("CODEX_API_BASE_URL") or "https://chatgpt.com/backend-api/codex").rstrip("/")
 CODEX_RESPONSES_URL = f"{CODEX_API_BASE_URL}/responses"
-OPENAI_PLATFORM_RESPONSES_COMPACT_URL = "https://api.openai.com/v1/responses/compact"
+CODEX_RESPONSES_COMPACT_URL = f"{CODEX_API_BASE_URL}/responses/compact"
 _CODEX_BASE_FOR_WHAM = CODEX_API_BASE_URL.rstrip("/")
 if _CODEX_BASE_FOR_WHAM.endswith("/codex"):
     _CODEX_BASE_FOR_WHAM = _CODEX_BASE_FOR_WHAM[: -len("/codex")]
 CODEX_WHAM_USAGE_URL = f"{_CODEX_BASE_FOR_WHAM}/wham/usage"
-CODEX_DEFAULT_VERSION = "0.21.0"
+# NOTE: Codex upstream appears to gate some model IDs by client version.
+# Keep this aligned with common working implementations (e.g. CLIProxyAPI).
+CODEX_DEFAULT_VERSION = "0.98.0"
 CODEX_OPENAI_BETA = "responses=experimental"
-CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.50.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
+CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.98.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
 CODEX_FALLBACK_PLATFORM = "CodexCLI"
 
 logger = logging.getLogger(__name__)
@@ -438,12 +442,35 @@ def _pick_codex_ping_model(models: list[str]) -> str:
     return models[0]
 
 
+def _strip_codex_thinking_suffix(model_id: str) -> str:
+    """
+    Normalize common "thinking / effort" suffixes used by some gateways.
+    Examples:
+    - gpt-5.3-codex-high -> gpt-5.3-codex
+    - gpt-5.1-codex-mini-medium -> gpt-5.1-codex-mini
+    """
+    raw = (model_id or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    for suffix in ("-none", "-low", "-medium", "-high", "-xhigh"):
+        if lowered.endswith(suffix):
+            return raw[: -len(suffix)]
+    return raw
+
+
 def _resolve_codex_model_name(model: Any) -> str:
     raw = _safe_str(model)
     if not raw:
         return ""
-    alias = CODEX_MODEL_ALIASES.get(raw.lower())
-    return alias or raw
+
+    # Some clients may send "provider/model" (e.g. deepseek-ai/DeepSeek-V3).
+    # For Codex, we only care about the last segment as the actual model id.
+    model_id = raw.split("/")[-1].strip() if "/" in raw else raw.strip()
+    model_id = _strip_codex_thinking_suffix(model_id)
+
+    alias = CODEX_MODEL_ALIASES.get(model_id.lower())
+    return alias or model_id
 
 
 def _parse_retry_after(headers: httpx.Headers, *, now: datetime) -> Optional[datetime]:
@@ -805,6 +832,60 @@ def _normalize_codex_responses_request(request_data: Dict[str, Any]) -> Dict[str
     return body
 
 
+def _normalize_codex_responses_compact_request(request_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Codex `/responses/compact` is non-streaming JSON.
+
+    Similar to `_normalize_codex_responses_request`, but:
+    - does NOT force `stream=true` (and removes it if present)
+    - keeps request compatible with Codex upstream strictness
+    """
+    body = dict(request_data or {})
+    body.pop("stream", None)
+    body["store"] = False
+    body["parallel_tool_calls"] = True
+    body["include"] = ["reasoning.encrypted_content"]
+
+    # Keep consistent with SSE path: Codex upstream is strict about some sampling fields.
+    body.pop("max_output_tokens", None)
+    body.pop("max_completion_tokens", None)
+    body.pop("temperature", None)
+    body.pop("top_p", None)
+    body.pop("service_tier", None)
+
+    input_value = body.get("input")
+    if isinstance(input_value, str):
+        body["input"] = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": input_value}],
+            }
+        ]
+
+    input_items = body.get("input")
+    if isinstance(input_items, list) and input_items:
+        changed = False
+        new_items: List[Any] = []
+        for it in input_items:
+            if isinstance(it, dict) and str(it.get("role") or "").strip().lower() == "system":
+                cloned = dict(it)
+                cloned["role"] = "developer"
+                new_items.append(cloned)
+                changed = True
+            else:
+                new_items.append(it)
+        if changed:
+            body["input"] = new_items
+
+    body.pop("previous_response_id", None)
+    body.pop("prompt_cache_retention", None)
+    body.pop("safety_identifier", None)
+    if "instructions" not in body:
+        body["instructions"] = ""
+    return body
+
+
 def _build_codex_headers(
     *,
     access_token: str,
@@ -817,6 +898,31 @@ def _build_codex_headers(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {access_token}",
         "Accept": "text/event-stream",
+        "Connection": "Keep-Alive",
+        "Version": CODEX_DEFAULT_VERSION,
+        "Openai-Beta": CODEX_OPENAI_BETA,
+        "Session_id": session_id,
+        "Conversation_id": session_id,
+        "User-Agent": ua,
+        "Originator": "codex_cli_rs",
+    }
+    if chatgpt_account_id:
+        headers["Chatgpt-Account-Id"] = chatgpt_account_id
+    return headers
+
+
+def _build_codex_compact_headers(
+    *,
+    access_token: str,
+    chatgpt_account_id: str,
+    user_agent: Optional[str],
+) -> Dict[str, str]:
+    ua = (user_agent or "").strip() or CODEX_DEFAULT_USER_AGENT
+    session_id = str(uuid4())
+    headers: Dict[str, str] = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
         "Connection": "Keep-Alive",
         "Version": CODEX_DEFAULT_VERSION,
         "Openai-Beta": CODEX_OPENAI_BETA,
@@ -1611,7 +1717,7 @@ class CodexService:
     ) -> Tuple[Any, Any]:
         """
         `POST /v1/responses/compact`（Codex 渠道）：
-        - 通过 OpenAI Platform 的 `/v1/responses/compact` 执行压缩（compact），返回其 JSON。
+        - 通过 Codex upstream 的 `/responses/compact` 执行压缩（compact），返回其 JSON。
         - 账号选择/冻结/限额切换逻辑与 `/responses` 主链路保持一致。
         """
         if not isinstance(request_data, dict):
@@ -1635,7 +1741,7 @@ class CodexService:
 
             exclude_ids.add(int(getattr(selected, "id", 0) or 0))
 
-            body: Dict[str, Any] = dict(request_data or {})
+            body: Dict[str, Any] = _normalize_codex_responses_compact_request(request_data)
             if "model" in body:
                 resolved = _resolve_codex_model_name(body.get("model"))
                 if resolved:
@@ -1656,13 +1762,17 @@ class CodexService:
                 await self._disable_account(selected, reason="missing_account_id")
                 continue
 
-            headers = _build_openai_platform_json_headers(access_token=access_token, user_agent=user_agent)
+            headers = _build_codex_compact_headers(
+                access_token=access_token,
+                chatgpt_account_id=chatgpt_account_id,
+                user_agent=user_agent,
+            )
 
             timeout = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
             client = _build_httpx_async_client(timeout=timeout, follow_redirects=True)
             resp: Optional[httpx.Response] = None
             try:
-                resp = await client.post(OPENAI_PLATFORM_RESPONSES_COMPACT_URL, json=body, headers=headers)
+                resp = await client.post(CODEX_RESPONSES_COMPACT_URL, json=body, headers=headers)
             except Exception:
                 await client.aclose()
                 raise
