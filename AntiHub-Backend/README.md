@@ -86,13 +86,15 @@ cp .env.example .env
 
 编辑 `.env` 文件,配置以下必需项:
 
-```bash
-# 应用配置
-APP_ENV=development
-LOG_LEVEL=INFO
-
-# 数据库配置
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/shared_accounts
+ ```bash
+ # 应用配置
+ APP_ENV=development
+ LOG_LEVEL=INFO
+ # Debug：打印用户请求体（完整原始请求体）；谨慎开启，可能包含敏感信息
+ DEBUG_LOG=false
+ 
+ # 数据库配置
+ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/shared_accounts
 
 # Redis 配置
 REDIS_URL=redis://localhost:6379/0
@@ -507,20 +509,22 @@ uv run alembic current
 
 ### 环境配置
 
-#### 开发环境
-```bash
-APP_ENV=development
-LOG_LEVEL=DEBUG
-```
-
-#### 生产环境
-```bash
-APP_ENV=production
-LOG_LEVEL=INFO
-# 确保使用强密码和安全的 JWT 密钥
-# 建议为 Refresh Token 使用独立的密钥
-# 配置适当的 CORS 源
-# 禁用 API 文档
+ #### 开发环境
+ ```bash
+ APP_ENV=development
+ LOG_LEVEL=DEBUG
+ DEBUG_LOG=true
+ ```
+ 
+ #### 生产环境
+ ```bash
+ APP_ENV=production
+ LOG_LEVEL=INFO
+ DEBUG_LOG=false
+ # 确保使用强密码和安全的 JWT 密钥
+ # 建议为 Refresh Token 使用独立的密钥
+ # 配置适当的 CORS 源
+ # 禁用 API 文档
 ```
 
 ### Plug-in API 集成开发

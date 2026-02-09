@@ -3,6 +3,7 @@ FastAPI 应用主文件
 应用入口点和配置
 """
 import logging
+import base64
 import json
 import os
 import tempfile
@@ -173,6 +174,42 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ==================== Debug 日志（请求体） ====================
+    # 注意：开启后会打印所有请求的原始请求体，可能包含敏感信息（密码/Token等）
+    if settings.debug_log:
+
+        @app.middleware("http")
+        async def debug_log_request_body(request: Request, call_next):
+            try:
+                body_bytes = await request.body()
+            except Exception as e:
+                logger.warning(
+                    "DEBUG_LOG 读取请求体失败 - %s %s: %s",
+                    request.method,
+                    request.url.path,
+                    str(e),
+                    exc_info=True,
+                )
+                return await call_next(request)
+
+            if body_bytes:
+                content_type = request.headers.get("content-type", "")
+                try:
+                    body_text = body_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    body_text = f"[base64] {base64.b64encode(body_bytes).decode('ascii')}"
+
+                logger.info(
+                    "DEBUG_LOG 请求体 - %s %s (content-type=%s, bytes=%s):\n%s",
+                    request.method,
+                    request.url.path,
+                    content_type or "-",
+                    len(body_bytes),
+                    body_text,
+                )
+
+            return await call_next(request)
     
     # ==================== 注册路由 ====================
     
