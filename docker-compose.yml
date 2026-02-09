@@ -25,6 +25,7 @@ services:
     environment:
       APP_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEBUG_LOG: ${DEBUG_LOG:-false}
 
       # 外部依赖（由你自己提供/维护）
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-antihub}:${POSTGRES_PASSWORD:-please-change-me}@postgres:5432/${POSTGRES_DB:-antihub}}

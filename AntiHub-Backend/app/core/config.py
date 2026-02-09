@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # 应用配置
     app_env: str = Field(default="development", description="应用环境")
     log_level: str = Field(default="INFO", description="日志级别")
+    debug_log: bool = Field(
+        default=False,
+        description="是否打印用户请求体（谨慎开启，可能包含敏感信息）",
+    )
     
     # 数据库配置
     database_url: str = Field(..., description="PostgreSQL 数据库连接 URL")

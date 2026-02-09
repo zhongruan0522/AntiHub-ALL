@@ -50,6 +50,13 @@ class KiroAnthropicConverter:
         if not request.messages:
             raise ValueError("messages 不能为空")
 
+        # 兜底：修复 tool_use / tool_result 漏传（或空白）ID 的情况。
+        #
+        # Kiro/CodeWhisperer 对 tool_use/tool_result 的配对很严格：如果 tool_result 缺少 toolUseId，
+        # 或 tool_use 缺少 toolUseId，容易触发上游 400 "Improperly formed request"。
+        # 这里按消息顺序做一次“就地补全”，确保同一对 tool_use/tool_result 使用同一个 ID。
+        cls._patch_tool_use_and_result_ids(request.messages)
+
         model_id = cls._map_model(request.model)
         thinking_cfg = getattr(request, "thinking", None)
         # output_config 用于 adaptive thinking（参考 kiro.rs）
@@ -93,7 +100,9 @@ class KiroAnthropicConverter:
         current_text, current_images, current_tool_results = cls._process_user_content(getattr(last, "content", None))
 
         # 5) 过滤 tool_use/tool_result 的配对，避免孤立/重复导致 Kiro 400
-        validated_tool_results = cls._validate_tool_pairing(history, current_tool_results)
+        validated_tool_results, orphaned_tool_use_ids = cls._validate_tool_pairing(history, current_tool_results)
+        # Kiro upstream rejects orphaned toolUses (HTTP 400: "Improperly formed request").
+        cls._remove_orphaned_tool_uses_from_history(history, orphaned_tool_use_ids)
 
         # 如果 tool_result 被过滤（孤立/重复），把它的内容降级拼到用户文本里，避免 currentMessage 变成空内容。
         current_text = cls._append_orphan_tool_result_text(current_text, current_tool_results, validated_tool_results)
@@ -135,6 +144,109 @@ class KiroAnthropicConverter:
             "stream": bool(getattr(request, "stream", False)),
             "conversationState": conversation_state,
         }
+
+    @staticmethod
+    def _get_attr_or_key(obj: Any, key: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    @staticmethod
+    def _set_attr_or_key(obj: Any, key: str, value: Any) -> None:
+        if isinstance(obj, dict):
+            obj[key] = value
+            return
+        try:
+            setattr(obj, key, value)
+        except Exception:
+            # Pydantic models are usually mutable; if not, best-effort only.
+            return
+
+    @staticmethod
+    def _normalize_non_empty_str(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        return trimmed
+
+    @staticmethod
+    def _generate_tool_use_id() -> str:
+        # Compatible with common Anthropic-style ids (only needs to be a non-empty string).
+        return f"toolu_{uuid.uuid4().hex}"
+
+    @classmethod
+    def _patch_tool_use_and_result_ids(cls, messages: List[Any]) -> None:
+        """
+        Best-effort patch for missing tool_use.id / tool_result.tool_use_id.
+
+        Strategy:
+        - Traverse messages in order.
+        - Keep a FIFO queue of pending tool_use blocks (assistant side).
+        - For each tool_result block (user side):
+          - If tool_use_id exists, pair it to a pending tool_use with missing id if any.
+          - If tool_use_id is missing/blank, fill it from the next pending tool_use id; generate if needed.
+        """
+        pending: List[Dict[str, Any]] = []
+
+        for msg in messages:
+            content = cls._get_attr_or_key(msg, "content")
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                block_type = cls._get_attr_or_key(block, "type")
+
+                if block_type == "tool_use":
+                    raw_id = cls._get_attr_or_key(block, "id")
+                    normalized_id = cls._normalize_non_empty_str(raw_id)
+                    if normalized_id is not None and raw_id != normalized_id:
+                        cls._set_attr_or_key(block, "id", normalized_id)
+                    pending.append({"id": normalized_id, "block": block})
+                    continue
+
+                if block_type != "tool_result":
+                    continue
+
+                raw_tool_use_id = cls._get_attr_or_key(block, "tool_use_id")
+                normalized_tool_use_id = cls._normalize_non_empty_str(raw_tool_use_id)
+                resolved_tool_use_id: Optional[str] = normalized_tool_use_id
+
+                if pending:
+                    if resolved_tool_use_id:
+                        # Prefer exact-id pairing when possible.
+                        matched_index: Optional[int] = None
+                        for i, p in enumerate(pending):
+                            if p.get("id") == resolved_tool_use_id:
+                                matched_index = i
+                                break
+                        if matched_index is not None:
+                            pending.pop(matched_index)
+                        else:
+                            # If no matching id exists, but there is a missing-id tool_use, adopt this id.
+                            missing_index: Optional[int] = None
+                            for i, p in enumerate(pending):
+                                if not p.get("id"):
+                                    missing_index = i
+                                    break
+                            if missing_index is not None:
+                                p = pending.pop(missing_index)
+                                p["id"] = resolved_tool_use_id
+                                cls._set_attr_or_key(p["block"], "id", resolved_tool_use_id)
+                    else:
+                        # tool_result missing tool_use_id: fill from the next pending tool_use.
+                        p = pending.pop(0)
+                        if not p.get("id"):
+                            p["id"] = cls._generate_tool_use_id()
+                            cls._set_attr_or_key(p["block"], "id", p["id"])
+                        resolved_tool_use_id = str(p["id"])
+
+                if not resolved_tool_use_id:
+                    resolved_tool_use_id = cls._generate_tool_use_id()
+
+                if raw_tool_use_id != resolved_tool_use_id:
+                    cls._set_attr_or_key(block, "tool_use_id", resolved_tool_use_id)
 
     @classmethod
     def _map_model(cls, model: str) -> str:
@@ -578,7 +690,7 @@ class KiroAnthropicConverter:
     @classmethod
     def _validate_tool_pairing(
         cls, history: List[Dict[str, Any]], tool_results: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], set[str]]:
         # 1) 收集 history 中的所有 toolUseId（来自 assistant.toolUses）
         all_tool_use_ids = set()
         history_tool_result_ids = set()
@@ -628,4 +740,45 @@ class KiroAnthropicConverter:
         for orphan_id in sorted(unpaired):
             logger.warning("检测到孤立的 tool_use（找不到对应 tool_result）：toolUseId=%s", orphan_id)
 
-        return filtered
+        return filtered, unpaired
+
+    @staticmethod
+    def _remove_orphaned_tool_uses_from_history(history: List[Dict[str, Any]], orphaned_ids: set[str]) -> None:
+        """
+        Remove orphaned tool uses from history.
+
+        Kiro/CodeWhisperer validates that every `assistantResponseMessage.toolUses[*].toolUseId`
+        has a corresponding toolResult somewhere later in the conversation. If we send orphaned
+        toolUses, upstream may return HTTP 400 with "Improperly formed request".
+
+        This mirrors the reference fix in `2-参考项目/kiro.rs` (commit c0d5085).
+        """
+        if not orphaned_ids:
+            return
+
+        removed = 0
+        for entry in history:
+            assistant = entry.get("assistantResponseMessage")
+            if not isinstance(assistant, dict):
+                continue
+
+            tool_uses = assistant.get("toolUses")
+            if not isinstance(tool_uses, list) or not tool_uses:
+                continue
+
+            new_tool_uses: List[Any] = []
+            for tu in tool_uses:
+                if isinstance(tu, dict):
+                    tid = tu.get("toolUseId")
+                    if isinstance(tid, str) and tid in orphaned_ids:
+                        removed += 1
+                        continue
+                new_tool_uses.append(tu)
+
+            if new_tool_uses:
+                assistant["toolUses"] = new_tool_uses
+            else:
+                assistant.pop("toolUses", None)
+
+        if removed:
+            logger.info("Removed %d orphaned toolUses from history", removed)

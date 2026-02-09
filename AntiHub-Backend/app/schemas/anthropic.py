@@ -34,7 +34,8 @@ class AnthropicImageContent(BaseModel):
 class AnthropicToolUseContent(BaseModel):
     """Anthropic工具使用内容块"""
     type: Literal["tool_use"] = "tool_use"
-    id: str
+    # NOTE: 某些上游/客户端在并行 tool_use 时可能漏传 id；这里允许缺省，后续在转换层兜底生成。
+    id: Optional[str] = None
     name: str
     input: Dict[str, Any]
 
@@ -42,7 +43,8 @@ class AnthropicToolUseContent(BaseModel):
 class AnthropicToolResultContent(BaseModel):
     """Anthropic工具结果内容块"""
     type: Literal["tool_result"] = "tool_result"
-    tool_use_id: str
+    # NOTE: 某些上游/客户端可能漏传 tool_use_id；这里允许缺省，后续在转换层兜底配对/生成。
+    tool_use_id: Optional[str] = None
     content: Union[str, List[Union["AnthropicTextContent", "AnthropicImageContent"]]]
     is_error: Optional[bool] = False
 

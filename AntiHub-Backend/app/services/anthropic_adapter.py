@@ -63,6 +63,10 @@ class AnthropicAdapter:
         Returns:
             OpenAI格式的请求字典
         """
+        # 兜底：修复 tool_use / tool_result 漏传（或空白）ID 的情况，避免下游严格校验报错。
+        # 这类问题在并行工具调用时更容易出现。
+        cls._patch_tool_use_and_result_ids(request.messages)
+
         openai_messages = []
         
         # 处理system消息
@@ -124,6 +128,104 @@ class AnthropicAdapter:
             openai_request["tool_choice"] = cls._convert_anthropic_tool_choice_to_openai(tool_choice)
         
         return openai_request
+
+    @classmethod
+    def _set_block_attr(cls, block: Any, attr: str, value: Any) -> None:
+        """
+        设置内容块属性，支持 Pydantic 模型和 dict。
+        """
+        if isinstance(block, dict):
+            block[attr] = value
+            return
+        try:
+            setattr(block, attr, value)
+        except Exception:
+            return
+
+    @staticmethod
+    def _normalize_non_empty_str(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        return trimmed
+
+    @staticmethod
+    def _generate_tool_use_id() -> str:
+        return f"toolu_{uuid.uuid4().hex}"
+
+    @classmethod
+    def _patch_tool_use_and_result_ids(cls, messages: List[Any]) -> None:
+        """
+        Best-effort patch for missing tool_use.id / tool_result.tool_use_id.
+
+        The conversion chain (Anthropic -> OpenAI -> upstream) typically requires:
+        - assistant.tool_calls[*].id (from tool_use.id)
+        - tool.tool_call_id (from tool_result.tool_use_id)
+
+        If any ID is missing/blank, downstream may throw or return 400. We patch IDs in-place
+        using message order pairing so each tool_result matches the corresponding tool_use.
+        """
+        pending: List[Dict[str, Any]] = []
+
+        for msg in messages or []:
+            content = msg.content if hasattr(msg, "content") else msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                block_type = cls._get_block_type(block)
+
+                if block_type == "tool_use":
+                    raw_id = cls._get_block_attr(block, "id", None)
+                    normalized_id = cls._normalize_non_empty_str(raw_id)
+                    if normalized_id is not None and raw_id != normalized_id:
+                        cls._set_block_attr(block, "id", normalized_id)
+                    pending.append({"id": normalized_id, "block": block})
+                    continue
+
+                if block_type != "tool_result":
+                    continue
+
+                raw_tool_use_id = cls._get_block_attr(block, "tool_use_id", None)
+                normalized_tool_use_id = cls._normalize_non_empty_str(raw_tool_use_id)
+                resolved_tool_use_id: Optional[str] = normalized_tool_use_id
+
+                if pending:
+                    if resolved_tool_use_id:
+                        # Prefer exact-id pairing if possible.
+                        matched_index: Optional[int] = None
+                        for i, p in enumerate(pending):
+                            if p.get("id") == resolved_tool_use_id:
+                                matched_index = i
+                                break
+                        if matched_index is not None:
+                            pending.pop(matched_index)
+                        else:
+                            # Otherwise, if there's a missing-id tool_use, adopt this id.
+                            missing_index: Optional[int] = None
+                            for i, p in enumerate(pending):
+                                if not p.get("id"):
+                                    missing_index = i
+                                    break
+                            if missing_index is not None:
+                                p = pending.pop(missing_index)
+                                p["id"] = resolved_tool_use_id
+                                cls._set_block_attr(p["block"], "id", resolved_tool_use_id)
+                    else:
+                        # tool_result missing tool_use_id: fill from the next pending tool_use.
+                        p = pending.pop(0)
+                        if not p.get("id"):
+                            p["id"] = cls._generate_tool_use_id()
+                            cls._set_block_attr(p["block"], "id", p["id"])
+                        resolved_tool_use_id = str(p["id"])
+
+                if not resolved_tool_use_id:
+                    resolved_tool_use_id = cls._generate_tool_use_id()
+
+                if raw_tool_use_id != resolved_tool_use_id:
+                    cls._set_block_attr(block, "tool_use_id", resolved_tool_use_id)
 
     @classmethod
     def sanitize_openai_request_for_qwen(

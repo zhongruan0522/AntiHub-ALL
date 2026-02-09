@@ -2,7 +2,9 @@
 FastAPI 应用主文件
 应用入口点和配置
 """
+import base64
 import logging
+import base64
 import json
 import os
 import tempfile
@@ -45,6 +47,83 @@ logging.basicConfig(
 
 # 创建模块级别的 logger
 logger = logging.getLogger(__name__)
+
+
+class DebugLogRequestBodyMiddleware:
+    """
+    打印完整用户请求体（原始字节 -> UTF-8 文本；非 UTF-8 则打印 base64）。
+
+    注意：
+    - 不能用 BaseHTTPMiddleware（FastAPI 的 @app.middleware("http") 底层使用它），
+      否则会破坏 StreamingResponse（SSE）等流式响应，导致请求挂起/超时（常见表现为 504）。
+    - 本中间件会读取完整请求体；可能包含敏感信息（密码/Token 等），仅用于本地调试。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        original_receive = receive
+
+        messages = []
+        body_chunks = []
+        try:
+            while True:
+                message = await original_receive()
+                messages.append(message)
+
+                if message.get("type") == "http.disconnect":
+                    break
+
+                if message.get("type") != "http.request":
+                    break
+
+                body_chunks.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    break
+        except Exception as e:
+            logger.warning(
+                "DEBUG_LOG 读取请求体失败 - %s %s: %s",
+                scope.get("method", "-"),
+                scope.get("path", "-"),
+                str(e),
+                exc_info=True,
+            )
+            await self.app(scope, original_receive, send)
+            return
+
+        body_bytes = b"".join(body_chunks)
+        if body_bytes:
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1")
+                for k, v in (scope.get("headers") or [])
+            }
+            content_type = headers.get("content-type", "")
+
+            try:
+                body_text = body_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                body_text = f"[base64] {base64.b64encode(body_bytes).decode('ascii')}"
+
+            logger.info(
+                "DEBUG_LOG 请求体 - %s %s (content-type=%s, bytes=%s):\n%s",
+                scope.get("method", "-"),
+                scope.get("path", "-"),
+                content_type or "-",
+                len(body_bytes),
+                body_text,
+            )
+
+        async def receive_with_replay():
+            if messages:
+                return messages.pop(0)
+            return await original_receive()
+
+        await self.app(scope, receive_with_replay, send)
 
 
 # ==================== 生命周期事件 ====================
@@ -173,6 +252,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ==================== Debug 日志（请求体） ====================
+    # 注意：开启后会打印所有请求的原始请求体，可能包含敏感信息（密码/Token等）
+    if settings.debug_log:
+        app.add_middleware(DebugLogRequestBodyMiddleware)
     
     # ==================== 注册路由 ====================
     
