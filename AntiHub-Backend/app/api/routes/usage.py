@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, get_plugin_api_service, get_db_session
 from app.models.user import User
 from app.services.plugin_api_service import PluginAPIService
+from app.repositories.usage_counter_repository import UsageCounterRepository
 from app.repositories.usage_log_repository import UsageLogRepository
 from app.models.usage_log import UsageLog
 
@@ -422,13 +423,24 @@ async def get_request_usage_stats(
         start_at = _parse_iso_datetime(start_date)
         end_at = _parse_iso_datetime(end_date)
 
-        repo = UsageLogRepository(db)
-        stats_data = await repo.get_stats(
-            user_id=current_user.id,
-            start_at=start_at,
-            end_at=end_at,
-            config_type=config_type,
-        )
+        # usage_logs 仅保留最近 N 条（滑动窗口），不适合用来展示“累计消耗”。
+        # - 未指定时间范围：使用 usage_counters（累计统计，不裁剪）
+        # - 指定时间范围：仍使用 usage_logs（注意：仅代表日志表里现存数据）
+        if start_at is None and end_at is None:
+            stats_data = await UsageCounterRepository(db).get_stats(
+                user_id=current_user.id,
+                config_type=config_type,
+            )
+        else:
+            repo = UsageLogRepository(db)
+            stats_data = await repo.get_stats(
+                user_id=current_user.id,
+                start_at=start_at,
+                end_at=end_at,
+                config_type=config_type,
+            )
+            # usage_logs 表中暂不保存 cached_tokens（历史原因），这里保持字段存在但为 0
+            stats_data.setdefault("cached_tokens", 0)
 
         return {
             "success": True,

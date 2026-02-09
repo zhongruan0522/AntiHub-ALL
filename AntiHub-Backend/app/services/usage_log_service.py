@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 
 from app.db.session import get_session_maker
 from app.models.usage_log import UsageLog
+from app.repositories.usage_counter_repository import UsageCounterRepository
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +253,7 @@ class UsageLogService:
         quota_consumed: float = 0.0,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cached_tokens: int = 0,
         total_tokens: int = 0,
         success: bool = True,
         status_code: Optional[int] = None,
@@ -286,6 +288,19 @@ class UsageLogService:
                     tts_account_id=tts_account_id,
                 )
                 db.add(log)
+
+                # usage_logs 只保留最近 N 条：累计统计需要单独维护
+                await UsageCounterRepository(db).increment(
+                    user_id=user_id,
+                    config_type=config_type,
+                    success=success,
+                    quota_consumed=quota_consumed,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_tokens=cached_tokens,
+                    total_tokens=total_tokens,
+                    duration_ms=duration_ms,
+                )
                 await db.commit()
 
                 try:

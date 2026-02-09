@@ -20,6 +20,7 @@ import {
 } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   Table,
   TableBody,
@@ -591,11 +592,52 @@ export default function AnalyticsPage() {
                     </div>
                     <div className="space-y-2">
                       <p className="text-sm text-muted-foreground">{activeTab === 'zai-image' ? '总次数' : '总 Tokens'}</p>
-                      <p className="text-2xl font-bold">
-                        {activeTab === 'zai-image'
-                          ? (requestStats.total_quota_consumed || 0).toLocaleString()
-                          : (requestStats.total_tokens || 0).toLocaleString()}
-                      </p>
+                      {activeTab === 'zai-image' ? (
+                        <p className="text-2xl font-bold">
+                          {(requestStats.total_quota_consumed || 0).toLocaleString()}
+                        </p>
+                      ) : (
+                        (() => {
+                          const totalTokens = requestStats.total_tokens || 0;
+                          const inputTokens = requestStats.input_tokens || 0;
+                          const cachedTokens = requestStats.cached_tokens || 0;
+                          const outputTokens = requestStats.output_tokens || 0;
+                          const uncachedInputTokens = Math.max(inputTokens - cachedTokens, 0);
+                          const sum = uncachedInputTokens + cachedTokens + outputTokens;
+
+                          return (
+                            <div className="flex items-center gap-2">
+                              <span className="text-2xl font-bold">{totalTokens.toLocaleString()}</span>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge
+                                    variant="secondary"
+                                    className="h-5 px-1.5 text-[10px] leading-4 cursor-default select-none"
+                                  >
+                                    明细
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent sideOffset={6} className="max-w-[260px]">
+                                  <div className="space-y-1">
+                                    <div className="font-mono">
+                                      输入 {uncachedInputTokens.toLocaleString()}
+                                    </div>
+                                    <div className="font-mono">
+                                      缓存 {cachedTokens.toLocaleString()}
+                                    </div>
+                                    <div className="font-mono">
+                                      输出 {outputTokens.toLocaleString()}
+                                    </div>
+                                    <div className="pt-1 border-t border-background/20 font-mono">
+                                      合计 {sum.toLocaleString()}
+                                    </div>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </div>
+                          );
+                        })()
+                      )}
                     </div>
                     <div className="space-y-2">
                       <p className="text-sm text-muted-foreground">成功 / 失败</p>

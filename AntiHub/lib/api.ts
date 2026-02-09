@@ -1082,6 +1082,7 @@ export interface RequestUsageStats {
   success_requests: number;
   failed_requests: number;
   input_tokens: number;
+  cached_tokens?: number;
   output_tokens: number;
   total_tokens: number;
   total_quota_consumed: number;

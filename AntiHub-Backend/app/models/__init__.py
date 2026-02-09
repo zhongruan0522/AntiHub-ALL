@@ -13,6 +13,7 @@ from app.models.gemini_cli_account import GeminiCLIAccount
 from app.models.user_setting import UserSetting
 from app.models.zai_tts_account import ZaiTTSAccount
 from app.models.zai_image_account import ZaiImageAccount
+from app.models.usage_counter import UsageCounter
 
 __all__ = [
     "User",
@@ -26,4 +27,5 @@ __all__ = [
     "UserSetting",
     "ZaiTTSAccount",
     "ZaiImageAccount",
+    "UsageCounter",
 ]

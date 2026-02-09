@@ -763,6 +763,7 @@ async def chat_completions(
                         stream=True,
                         input_tokens=tracker.input_tokens,
                         output_tokens=tracker.output_tokens,
+                        cached_tokens=tracker.cached_tokens,
                         total_tokens=tracker.total_tokens,
                         success=tracker.success,
                         status_code=tracker.status_code,
