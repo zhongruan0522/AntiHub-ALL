@@ -886,6 +886,13 @@ class AnthropicAdapter:
             stop_reason = "tool_use"
         elif finish_reason in ("tool_calls", "function_call"):
             stop_reason = "end_turn"
+
+        # thinking-only：Opus 4.6 等模型可能把输出预算耗尽在 thinking 上，导致没有 text/tool_use。
+        # 对齐 kiro.rs：此时 stop_reason 应为 max_tokens，并补一个 text 块保证 content 数组结构完整。
+        has_non_thinking_blocks = any(getattr(b, "type", None) != "thinking" for b in content)
+        if reasoning_content and (not has_non_thinking_blocks):
+            stop_reason = "max_tokens"
+            content.append(AnthropicResponseTextContent(text=" "))
         
         anthropic_response = AnthropicMessagesResponse(
             id=f"msg_{openai_response.get('id', uuid.uuid4().hex[:24])}",
@@ -951,6 +958,8 @@ class AnthropicAdapter:
         output_tokens = 0
         finish_reason = None
         current_tool_calls = {}  # 跟踪工具调用
+        emitted_meaningful_text_delta = False  # 是否产生过非空白 text_delta（用于判断 thinking-only）
+        context_window_exceeded = False  # 是否检测到上下文窗口用尽（contextUsageEvent >= 100%）
 
         # content block 索引跟踪
         current_block_index = 0
@@ -997,7 +1006,24 @@ class AnthropicAdapter:
                         data = json.loads(data_str)
                     except json.JSONDecodeError as e:
                         continue
-                    
+
+                    # Kiro / 兼容网关可能会发 contextUsageEvent（没有 choices），用于告知上下文窗口使用比例。
+                    # 如果达到 100%，对齐 kiro.rs：stop_reason 应为 model_context_window_exceeded。
+                    context_usage_percentage = None
+                    if isinstance(data, dict):
+                        if "context_usage_percentage" in data:
+                            context_usage_percentage = data.get("context_usage_percentage")
+                        else:
+                            ctx = data.get("contextUsage") or data.get("context_usage")
+                            if isinstance(ctx, dict) and "context_usage_percentage" in ctx:
+                                context_usage_percentage = ctx.get("context_usage_percentage")
+                    if context_usage_percentage is not None:
+                        try:
+                            if float(context_usage_percentage) >= 100.0:
+                                context_window_exceeded = True
+                        except (TypeError, ValueError):
+                            pass
+                     
                     # 提取usage信息
                     if 'usage' in data:
                         input_tokens = data['usage'].get('prompt_tokens', input_tokens)
@@ -1155,6 +1181,8 @@ class AnthropicAdapter:
                                         yield f"event: content_block_start\ndata: {json.dumps(text_block_start, ensure_ascii=False)}\n\n"
 
                                     accumulated_text += segment.content
+                                    if segment.content and segment.content.strip():
+                                        emitted_meaningful_text_delta = True
 
                                     # 发送content_block_delta事件
                                     content_delta = {
@@ -1207,6 +1235,8 @@ class AnthropicAdapter:
                                 yield f"event: content_block_start\ndata: {json.dumps(text_block_start, ensure_ascii=False)}\n\n"
 
                             accumulated_text += text_delta
+                            if text_delta and text_delta.strip():
+                                emitted_meaningful_text_delta = True
 
                             # 发送content_block_delta事件
                             content_delta = {
@@ -1359,6 +1389,8 @@ class AnthropicAdapter:
                         yield f"event: content_block_start\ndata: {json.dumps(text_block_start, ensure_ascii=False)}\n\n"
 
                     accumulated_text += segment.content
+                    if segment.content and segment.content.strip():
+                        emitted_meaningful_text_delta = True
 
                     # 发送content_block_delta事件
                     content_delta = {
@@ -1393,7 +1425,9 @@ class AnthropicAdapter:
             }
             yield f"event: content_block_stop\ndata: {json.dumps(thinking_block_stop, ensure_ascii=False)}\n\n"
             current_block_index += 1
-        
+
+        thinking_only = thinking_block_started and (not emitted_meaningful_text_delta) and (not current_tool_calls)
+         
         # 如果没有任何text块开始（只有thinking或什么都没有），需要发送一个空的text块
         if not text_block_started:
             text_block_started = True
@@ -1406,7 +1440,19 @@ class AnthropicAdapter:
                 }
             }
             yield f"event: content_block_start\ndata: {json.dumps(text_block_start, ensure_ascii=False)}\n\n"
-        
+
+            # thinking-only：补发一个空格 text_delta，避免部分客户端把“空 text 块”当成缺失。
+            if thinking_only:
+                content_delta = {
+                    "type": "content_block_delta",
+                    "index": current_block_index,
+                    "delta": {
+                        "type": "text_delta",
+                        "text": " ",
+                    },
+                }
+                yield f"event: content_block_delta\ndata: {json.dumps(content_delta, ensure_ascii=False)}\n\n"
+         
         # 发送text块的content_block_stop事件
         content_block_stop = {
             "type": "content_block_stop",
@@ -1497,8 +1543,12 @@ class AnthropicAdapter:
             next_block_index += 1
         
         # 确定停止原因
-        if emitted_tool_use:
+        if context_window_exceeded:
+            stop_reason = "model_context_window_exceeded"
+        elif emitted_tool_use:
             stop_reason = "tool_use"
+        elif thinking_only:
+            stop_reason = "max_tokens"
         elif finish_reason in ("tool_calls", "function_call"):
             stop_reason = "end_turn"
         elif finish_reason:

@@ -195,7 +195,9 @@ class AnthropicMessagesResponse(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: List[AnthropicResponseContentBlock]
     model: str
-    stop_reason: Optional[Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]] = None
+    stop_reason: Optional[
+        Literal["end_turn", "max_tokens", "stop_sequence", "tool_use", "model_context_window_exceeded"]
+    ] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage
 

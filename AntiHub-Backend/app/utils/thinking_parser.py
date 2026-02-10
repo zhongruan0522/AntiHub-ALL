@@ -66,6 +66,8 @@ class KiroThinkingTagParser:
 
     OPEN_TAG = "<thinking>"
     CLOSE_TAG = "</thinking>"
+    # 关闭标签后，Kiro/Opus 通常会跟 `\n\n` 再进入正文文本；此处用于跨 chunk 时吞掉残留换行
+    _CLOSE_TAG_NEWLINES = ("\n", "\r")
     # 引号字符，用于检测假标签
     QUOTE_CHARS = ("`", '"', "'", "“", "”", "‘", "’", "「", "」", "『", "』")
 
@@ -73,6 +75,7 @@ class KiroThinkingTagParser:
         self.buffer = ""
         self.state = ParseState.INITIAL
         self.thinking_extracted = False  # 是否已提取过 thinking 块
+        self._strip_leading_newlines_next_text = False  # thinking 结束后，下一段 text 是否需要吞掉前导换行
 
     def push_and_parse(self, incoming: str) -> List[TextSegment]:
         """
@@ -111,6 +114,9 @@ class KiroThinkingTagParser:
 
             elif self.state == ParseState.AFTER_THINKING:
                 # thinking 块结束后：输出剩余文本
+                if self._strip_leading_newlines_next_text and self.buffer:
+                    self.buffer = self.buffer.lstrip("".join(self._CLOSE_TAG_NEWLINES))
+                    self._strip_leading_newlines_next_text = False
                 if self.buffer:
                     segments.append(TextSegment(SegmentType.TEXT, self.buffer))
                     self.buffer = ""
@@ -149,6 +155,9 @@ class KiroThinkingTagParser:
 
         elif self.state in (ParseState.AFTER_THINKING, ParseState.PASSTHROUGH):
             # 输出剩余文本
+            if self._strip_leading_newlines_next_text and self.buffer:
+                self.buffer = self.buffer.lstrip("".join(self._CLOSE_TAG_NEWLINES))
+                self._strip_leading_newlines_next_text = False
             if self.buffer:
                 segments.append(TextSegment(SegmentType.TEXT, self.buffer))
                 self.buffer = ""
@@ -214,8 +223,9 @@ class KiroThinkingTagParser:
         thinking_content = self.buffer[:close_pos]
         # 跳过 </thinking> 标签
         after_tag = self.buffer[close_pos + len(self.CLOSE_TAG):]
-        # 跳过标签后的换行符（通常有 \n\n）
-        after_tag = after_tag.lstrip('\n')
+        # 跳过标签后的换行符（通常有 \n\n）；跨 chunk 的残留换行在 AFTER_THINKING 阶段继续吞掉
+        after_tag = after_tag.lstrip("\r\n")
+        self._strip_leading_newlines_next_text = True
 
         self.buffer = after_tag
         self.state = ParseState.AFTER_THINKING

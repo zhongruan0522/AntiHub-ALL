@@ -66,6 +66,22 @@ class TestKiroThinkingAdaptive(unittest.TestCase):
         self.assertEqual(segments[0].type, SegmentType.THINKING)
         self.assertEqual(segments[0].content, "abc")
 
+    def test_thinking_parser_end_tag_newlines_split_across_chunks(self) -> None:
+        parser = KiroThinkingTagParser()
+
+        segments = []
+        segments.extend(parser.push_and_parse("<thinking>abc</thinking>\n"))
+        segments.extend(parser.push_and_parse("\n"))
+        segments.extend(parser.push_and_parse("Hello"))
+        segments.extend(parser.flush())
+
+        thinking = "".join(s.content for s in segments if s.type == SegmentType.THINKING)
+        text = "".join(s.content for s in segments if s.type == SegmentType.TEXT)
+
+        self.assertEqual(thinking, "abc")
+        # `</thinking>` 后的 `\n\n` 作为分隔符应被吞掉（即使跨 chunk 分割），正文应从 Hello 开始
+        self.assertEqual(text, "Hello")
+
     def test_thinking_parser_passthrough_when_not_thinking(self) -> None:
         parser = KiroThinkingTagParser()
         segments = parser.push_and_parse("\n\nHello")
@@ -76,4 +92,3 @@ class TestKiroThinkingAdaptive(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
