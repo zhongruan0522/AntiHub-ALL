@@ -1648,6 +1648,7 @@ export default function AccountsPage() {
     'gpt-oss-120b-medium',
     'claude-sonnet-4-5',
     'claude-sonnet-4-5-thinking',
+    'claude-opus-4-6-thinking',
     'claude-opus-4-5-thinking',
   ];
 
@@ -1655,6 +1656,7 @@ export default function AccountsPage() {
     const modelNames: Record<string, string> = {
       'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
       'claude-sonnet-4-5-thinking': 'Claude Sonnet 4.5 (Thinking)',
+      'claude-opus-4-6-thinking': 'Claude Opus 4.6 (Thinking)',
       'claude-opus-4-5-thinking': 'Claude Opus 4.5 (Thinking)',
       'gemini-2.5-flash-image': 'Gemini 2.5 Flash Image',
       'gemini-2.5-flash-thinking': 'Gemini 2.5 Flash (Thinking)',
