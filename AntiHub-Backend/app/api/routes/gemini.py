@@ -263,6 +263,7 @@ async def generate_content(
                         status_code=status_code,
                         error_message=error_message,
                         duration_ms=duration_ms,
+                        client_app=raw_request.headers.get("X-App"),
                     )
 
             return StreamingResponse(
@@ -308,6 +309,7 @@ async def generate_content(
                 success=True,
                 status_code=200,
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
 
             return result
@@ -355,6 +357,7 @@ async def generate_content(
             success=True,
             status_code=200,
             duration_ms=duration_ms,
+            client_app=raw_request.headers.get("X-App"),
         )
 
         return result
@@ -375,6 +378,7 @@ async def generate_content(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 error_message=str(e),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -403,6 +407,7 @@ async def generate_content(
                 status_code=e.response.status_code if e.response is not None else None,
                 error_message=str(detail),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
 
         raise HTTPException(
@@ -424,6 +429,7 @@ async def generate_content(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 error_message=str(e),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -445,6 +451,7 @@ async def generate_content(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 error_message=str(e),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -465,6 +472,7 @@ async def generate_content(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 error_message=str(e),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
         logger.error(f"Gemini generateContent 失败: {str(e)}")
         raise HTTPException(
@@ -556,6 +564,7 @@ async def stream_generate_content(
                         status_code=tracker.status_code,
                         error_message=tracker.error_message,
                         duration_ms=duration_ms,
+                        client_app=raw_request.headers.get("X-App"),
                     )
 
             return StreamingResponse(
@@ -630,6 +639,7 @@ async def stream_generate_content(
                         status_code=tracker.status_code,
                         error_message=tracker.error_message,
                         duration_ms=duration_ms,
+                        client_app=raw_request.headers.get("X-App"),
                     )
 
             return StreamingResponse(
@@ -722,6 +732,7 @@ async def stream_generate_content(
                     status_code=status_code,
                     error_message=error_message,
                     duration_ms=duration_ms,
+                    client_app=raw_request.headers.get("X-App"),
                 )
 
         return StreamingResponse(
@@ -757,6 +768,7 @@ async def stream_generate_content(
                 status_code=e.response.status_code if e.response is not None else None,
                 error_message=str(detail),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
 
         raise HTTPException(
@@ -778,6 +790,7 @@ async def stream_generate_content(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 error_message=str(e),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -798,6 +811,7 @@ async def stream_generate_content(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 error_message=str(e),
                 duration_ms=duration_ms,
+                client_app=raw_request.headers.get("X-App"),
             )
         logger.error(f"Gemini streamGenerateContent 失败: {str(e)}")
         raise HTTPException(

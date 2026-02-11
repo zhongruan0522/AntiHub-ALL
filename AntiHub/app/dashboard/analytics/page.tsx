@@ -85,6 +85,7 @@ export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image'>('antigravity');
   const [isTabInitialized, setIsTabInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingRequests, setIsLoadingRequests] = useState(true);
   const pageSize = 50;
 
   useEffect(() => {
@@ -106,10 +107,20 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     if (!isTabInitialized) return;
-    loadData();
-  }, [isTabInitialized, activeTab, currentPage, antigravityCurrentPage, requestCurrentPage]);
+    loadTabData();
+  }, [isTabInitialized, activeTab, currentPage, antigravityCurrentPage]);
 
-  const loadData = async () => {
+  useEffect(() => {
+    if (!isTabInitialized) return;
+    loadRequestData();
+  }, [isTabInitialized, activeTab, requestCurrentPage]);
+
+  const loadTabData = async () => {
+    if (activeTab !== 'antigravity' && activeTab !== 'kiro') {
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     try {
       if (activeTab === 'antigravity') {
@@ -135,16 +146,6 @@ export default function AnalyticsPage() {
 
         // 加载所有账号的消费记录并聚合
         await loadKiroLogs(accountsData);
-    } else if (activeTab === 'qwen' || activeTab === 'codex' || activeTab === 'gemini-cli' || activeTab === 'zai-tts' || activeTab === 'zai-image') {
-        const offset = (requestCurrentPage - 1) * pageSize;
-        const configType = activeTab;
-        const [statsData, logsData] = await Promise.all([
-          getRequestUsageStats({ config_type: configType }),
-          getRequestUsageLogs({ config_type: configType, limit: pageSize, offset }),
-        ]);
-        setRequestStats(statsData);
-        setRequestLogs(logsData.logs);
-        setRequestTotalRecords(logsData.pagination.total);
       }
     } catch (err) {
       toasterRef.current?.show({
@@ -155,6 +156,33 @@ export default function AnalyticsPage() {
       });
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadRequestData = async () => {
+    setIsLoadingRequests(true);
+    try {
+      const offset = (requestCurrentPage - 1) * pageSize;
+      const configType = activeTab;
+      const [statsData, logsData] = await Promise.all([
+        getRequestUsageStats({ config_type: configType }),
+        getRequestUsageLogs({ config_type: configType, limit: pageSize, offset }),
+      ]);
+      setRequestStats(statsData);
+      setRequestLogs(logsData.logs);
+      setRequestTotalRecords(logsData.pagination.total);
+    } catch (err) {
+      toasterRef.current?.show({
+        title: '加载失败',
+        message: err instanceof Error ? err.message : '加载数据失败',
+        variant: 'error',
+        position: 'top-right',
+      });
+      setRequestStats(null);
+      setRequestLogs([]);
+      setRequestTotalRecords(0);
+    } finally {
+      setIsLoadingRequests(false);
     }
   };
 
@@ -327,17 +355,21 @@ export default function AnalyticsPage() {
     ((activeTab === 'qwen' || activeTab === 'codex' || activeTab === 'gemini-cli' || activeTab === 'zai-tts' || activeTab === 'zai-image') && requestLogs.length === 0 && !requestStats);
 
   const requestProviderLabel =
-    activeTab === 'codex'
-      ? 'Codex'
-      : activeTab === 'gemini-cli'
-        ? 'GeminiCLI'
-        : activeTab === 'zai-tts'
-          ? 'ZAI TTS'
-          : activeTab === 'zai-image'
-            ? 'ZAI Image'
-          : 'Qwen';
+    activeTab === 'antigravity'
+      ? 'Antigravity'
+      : activeTab === 'kiro'
+        ? 'Kiro'
+        : activeTab === 'codex'
+          ? 'Codex'
+          : activeTab === 'gemini-cli'
+            ? 'GeminiCLI'
+            : activeTab === 'zai-tts'
+              ? 'ZAI TTS'
+              : activeTab === 'zai-image'
+                ? 'ZAI Image'
+                : 'Qwen';
 
-  if (isLoading && isFirstLoadForTab) {
+  if ((isLoading || isLoadingRequests) && isFirstLoadForTab) {
     return (
       <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
         <div className="px-4 lg:px-6">
@@ -359,7 +391,7 @@ export default function AnalyticsPage() {
             value={activeTab}
             onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini-cli' | 'zai-tts' | 'zai-image') => {
               setActiveTab(value);
-              if (value === 'qwen' || value === 'codex' || value === 'gemini-cli' || value === 'zai-tts' || value === 'zai-image') setRequestCurrentPage(1);
+              setRequestCurrentPage(1);
             }}
           >
             <SelectTrigger className="w-[160px] h-9">
@@ -627,8 +659,8 @@ export default function AnalyticsPage() {
           </Card>
         )}
 
-        {/* Qwen/Codex/GeminiCLI 请求统计（本系统记录） */}
-        {(activeTab === 'qwen' || activeTab === 'codex' || activeTab === 'gemini-cli' || activeTab === 'zai-tts' || activeTab === 'zai-image') && (
+        {/* 请求统计（本系统记录 / usage_logs） */}
+        {(activeTab === 'antigravity' || activeTab === 'kiro' || activeTab === 'qwen' || activeTab === 'codex' || activeTab === 'gemini-cli' || activeTab === 'zai-tts' || activeTab === 'zai-image') && (
           <>
             <Card className="mb-6">
               <CardHeader>
@@ -636,7 +668,11 @@ export default function AnalyticsPage() {
                 <CardDescription>统计本系统记录的 {requestProviderLabel} 调用（成功与失败都会记录）</CardDescription>
               </CardHeader>
               <CardContent>
-                {requestStats ? (
+                {isLoadingRequests ? (
+                  <div className="flex items-center justify-center h-40">
+                    <MorphingSquare message="加载中..." />
+                  </div>
+                ) : requestStats ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <p className="text-sm text-muted-foreground">总请求数</p>
@@ -716,7 +752,11 @@ export default function AnalyticsPage() {
                 <CardDescription>共 {requestTotalRecords} 条使用记录</CardDescription>
               </CardHeader>
               <CardContent>
-                {requestLogs.length === 0 ? (
+                {isLoadingRequests ? (
+                  <div className="flex items-center justify-center h-40">
+                    <MorphingSquare message="加载中..." />
+                  </div>
+                ) : requestLogs.length === 0 ? (
                   <div className="text-center py-12 text-muted-foreground">
                     <p className="text-lg mb-2">暂无使用记录</p>
                     <p className="text-sm">
@@ -770,6 +810,11 @@ export default function AnalyticsPage() {
                                   <div className="text-xs text-muted-foreground font-mono whitespace-nowrap">
                                     {log.model_name || '-'}
                                   </div>
+                                  {log.client_app ? (
+                                    <div className="text-xs text-muted-foreground font-mono whitespace-nowrap">
+                                      app: {log.client_app}
+                                    </div>
+                                  ) : null}
                                 </div>
                               </TableCell>
                               {activeTab === 'zai-tts' && (

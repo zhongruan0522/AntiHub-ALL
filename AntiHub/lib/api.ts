@@ -227,6 +227,7 @@ export async function fetchWithAuth<T>(
   
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
+    'X-App': 'AntiHub-Web',
     ...options.headers,
     ...(token && { 'Authorization': `Bearer ${token}` })
   };
@@ -1107,6 +1108,7 @@ export interface RequestUsageLogItem {
   method: string;
   model_name: string | null;
   config_type: string | null;
+  client_app?: string | null;
   stream: boolean;
   success: boolean;
   status_code: number | null;
@@ -1167,11 +1169,13 @@ export async function getRequestUsageStats(params?: {
   start_date?: string;
   end_date?: string;
   config_type?: ApiType;
+  client_app?: string;
 }): Promise<RequestUsageStats> {
   const queryParams = new URLSearchParams();
   if (params?.start_date) queryParams.append('start_date', params.start_date);
   if (params?.end_date) queryParams.append('end_date', params.end_date);
   if (params?.config_type) queryParams.append('config_type', params.config_type);
+  if (params?.client_app) queryParams.append('client_app', params.client_app);
 
   const url = `${API_BASE_URL}/api/usage/requests/stats${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
   const result = await fetchWithAuth<{ success: boolean; data: RequestUsageStats }>(url, { method: 'GET' });
@@ -1187,6 +1191,7 @@ export async function getRequestUsageLogs(params?: {
   start_date?: string;
   end_date?: string;
   config_type?: ApiType;
+  client_app?: string;
   success?: boolean;
   model_name?: string;
 }): Promise<RequestUsageLogsResponse> {
@@ -1196,6 +1201,7 @@ export async function getRequestUsageLogs(params?: {
   if (params?.start_date) queryParams.append('start_date', params.start_date);
   if (params?.end_date) queryParams.append('end_date', params.end_date);
   if (params?.config_type) queryParams.append('config_type', params.config_type);
+  if (params?.client_app) queryParams.append('client_app', params.client_app);
   if (params?.success !== undefined) queryParams.append('success', params.success ? 'true' : 'false');
   if (params?.model_name) queryParams.append('model_name', params.model_name);
 
@@ -1556,7 +1562,9 @@ export async function sendChatCompletionStream(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${authToken}`,
     };
-    
+
+    headers['X-App'] = 'AntiHub-Web';
+     
     if (request.apiType) {
       headers['X-Api-Type'] = request.apiType;
     }

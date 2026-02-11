@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 MAX_ERROR_MESSAGE_LENGTH = 2000
 MAX_LOGS_PER_CHANNEL = 200
 MAX_REQUEST_BODY_LENGTH = 65536  # 64KB，防止请求体过大
+MAX_CLIENT_APP_LENGTH = 128
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -56,6 +57,20 @@ def _truncate_request_body(body: Any) -> Optional[str]:
         return json_str[:MAX_REQUEST_BODY_LENGTH] + "…"
     except Exception:
         return None
+
+
+def _truncate_client_app(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    if len(text) <= MAX_CLIENT_APP_LENGTH:
+        return text
+    return text[:MAX_CLIENT_APP_LENGTH]
 
 
 def _config_type_filter(config_type: Optional[str]):
@@ -275,6 +290,7 @@ class UsageLogService:
         duration_ms: int = 0,
         tts_voice_id: Optional[str] = None,
         tts_account_id: Optional[str] = None,
+        client_app: Optional[str] = None,
         request_body: Any = None,
     ) -> None:
         """
@@ -301,6 +317,7 @@ class UsageLogService:
                     duration_ms=duration_ms,
                     tts_voice_id=tts_voice_id,
                     tts_account_id=tts_account_id,
+                    client_app=_truncate_client_app(client_app),
                     request_body=_truncate_request_body(request_body),
                 )
                 db.add(log)

@@ -722,6 +722,7 @@ async def chat_completions(
     method = raw_request.method
     api_key_id = getattr(current_user, "_api_key_id", None)
     model_name = getattr(request, "model", None)
+    request_json = request.model_dump()
 
     config_type = getattr(current_user, "_config_type", None)
     effective_config_type = config_type or "antigravity"
@@ -740,7 +741,7 @@ async def chat_completions(
                         user_id=current_user.id,
                         method="POST",
                         path="/v1/chat/completions",
-                        json_data=request.model_dump(),
+                        json_data=request_json,
                         extra_headers=extra_headers if extra_headers else None,
                     ):
                         tracker.feed(chunk)
@@ -769,6 +770,8 @@ async def chat_completions(
                         status_code=tracker.status_code,
                         error_message=tracker.error_message,
                         duration_ms=duration_ms,
+                        client_app=raw_request.headers.get("X-App"),
+                        request_body=request_json,
                     )
 
             return StreamingResponse(generate(), media_type="text/event-stream")
@@ -777,7 +780,7 @@ async def chat_completions(
             user_id=current_user.id,
             method="POST",
             path="/v1/chat/completions",
-            json_data=request.model_dump(),
+            json_data=request_json,
             extra_headers=extra_headers if extra_headers else None,
         )
 
@@ -797,6 +800,8 @@ async def chat_completions(
             success=True,
             status_code=200,
             duration_ms=duration_ms,
+            client_app=raw_request.headers.get("X-App"),
+            request_body=request_json,
         )
         return result
     except ValueError as e:
@@ -813,6 +818,8 @@ async def chat_completions(
             status_code=status.HTTP_400_BAD_REQUEST,
             error_message=str(e),
             duration_ms=duration_ms,
+            client_app=raw_request.headers.get("X-App"),
+            request_body=request_json,
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -850,6 +857,8 @@ async def chat_completions(
             status_code=e.response.status_code,
             error_message=error_message,
             duration_ms=duration_ms,
+            client_app=raw_request.headers.get("X-App"),
+            request_body=request_json,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -869,6 +878,8 @@ async def chat_completions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             error_message=str(e),
             duration_ms=duration_ms,
+            client_app=raw_request.headers.get("X-App"),
+            request_body=request_json,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

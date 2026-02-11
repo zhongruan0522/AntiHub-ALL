@@ -326,6 +326,7 @@ def _usage_log_to_dict(log: UsageLog) -> dict:
         "method": log.method,
         "model_name": log.model_name,
         "config_type": log.config_type,
+        "client_app": log.client_app,
         "stream": bool(log.stream),
         "success": bool(log.success),
         "status_code": log.status_code,
@@ -352,6 +353,7 @@ async def get_request_usage_logs(
     start_date: Optional[str] = Query(None, description="开始时间（ISO8601）"),
     end_date: Optional[str] = Query(None, description="结束时间（ISO8601）"),
     config_type: Optional[str] = Query(None, description="antigravity/kiro/qwen/codex/gemini-cli/zai-tts/zai-image"),
+    client_app: Optional[str] = Query(None, description="客户端标识（来自 X-App 请求头）"),
     success: Optional[bool] = Query(None, description="true=只看成功，false=只看失败，不传=全部"),
     model_name: Optional[str] = Query(None, description="模型名过滤"),
     current_user: User = Depends(get_current_user),
@@ -374,6 +376,7 @@ async def get_request_usage_logs(
             start_at=start_at,
             end_at=end_at,
             config_type=config_type,
+            client_app=client_app,
             success=success,
             model_name=model_name,
         )
@@ -384,6 +387,7 @@ async def get_request_usage_logs(
             start_at=start_at,
             end_at=end_at,
             config_type=config_type,
+            client_app=client_app,
             success=success,
             model_name=model_name,
         )
@@ -413,6 +417,7 @@ async def get_request_usage_stats(
     start_date: Optional[str] = Query(None, description="开始时间（ISO8601）"),
     end_date: Optional[str] = Query(None, description="结束时间（ISO8601）"),
     config_type: Optional[str] = Query(None, description="antigravity/kiro/qwen/codex/gemini-cli/zai-tts/zai-image"),
+    client_app: Optional[str] = Query(None, description="客户端标识（来自 X-App 请求头）"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -426,7 +431,18 @@ async def get_request_usage_stats(
         # usage_logs 仅保留最近 N 条（滑动窗口），不适合用来展示“累计消耗”。
         # - 未指定时间范围：使用 usage_counters（累计统计，不裁剪）
         # - 指定时间范围：仍使用 usage_logs（注意：仅代表日志表里现存数据）
-        if start_at is None and end_at is None:
+        if client_app:
+            repo = UsageLogRepository(db)
+            stats_data = await repo.get_stats(
+                user_id=current_user.id,
+                start_at=start_at,
+                end_at=end_at,
+                config_type=config_type,
+                client_app=client_app,
+            )
+            # usage_logs 表中暂不保存 cached_tokens（历史原因），这里保持字段存在但为 0
+            stats_data.setdefault("cached_tokens", 0)
+        elif start_at is None and end_at is None:
             stats_data = await UsageCounterRepository(db).get_stats(
                 user_id=current_user.id,
                 config_type=config_type,
@@ -438,6 +454,7 @@ async def get_request_usage_stats(
                 start_at=start_at,
                 end_at=end_at,
                 config_type=config_type,
+                client_app=client_app,
             )
             # usage_logs 表中暂不保存 cached_tokens（历史原因），这里保持字段存在但为 0
             stats_data.setdefault("cached_tokens", 0)
