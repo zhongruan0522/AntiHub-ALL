@@ -54,6 +54,24 @@ class Settings(BaseSettings):
         description="用于加密存储用户API密钥的密钥"
     )
 
+    # Plugin DB → Backend DB 迁移（可选）
+    plugin_db_migration_enabled: bool = Field(
+        default=False,
+        description="是否在启动时执行 plugin DB → Backend DB 迁移（默认关闭）",
+    )
+    plugin_migration_database_url: Optional[str] = Field(
+        default=None,
+        description="plugin DB 连接 URL（仅迁移期使用）",
+    )
+    plugin_db_migration_lock_ttl_seconds: int = Field(
+        default=3600,
+        description="迁移分布式锁 TTL（秒）",
+    )
+    plugin_db_migration_wait_timeout_seconds: int = Field(
+        default=600,
+        description="未抢到锁时等待迁移完成的超时时间（秒）",
+    )
+
     # ZAI TTS 配置
     zai_tts_base_url: str = Field(
         default="https://audio.z.ai",

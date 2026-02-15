@@ -184,6 +184,19 @@ async def lifespan(app: FastAPI):
         )
         raise
 
+    # 启动时执行 plugin DB → Backend DB 迁移（可选）
+    try:
+        from app.services.plugin_db_migration_service import ensure_plugin_db_migrated
+
+        async with session_maker() as session:
+            await ensure_plugin_db_migrated(session)
+    except Exception as e:
+        logger.error(
+            f"执行 plugin DB 迁移失败: {type(e).__name__}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
     # 启动时清理 TTS 临时文件
     try:
         from app.services.zai_tts_service import ZaiTTSService

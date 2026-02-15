@@ -90,6 +90,21 @@ class RedisClient:
         if self._client is None:
             await self.connect()
         return await self._client.set(key, value, ex=expire)
+
+    async def set_if_not_exists(
+        self,
+        key: str,
+        value: str,
+        expire: Optional[int] = None,
+    ) -> bool:
+        """
+        仅当 key 不存在时设置键值（SET NX）
+
+        用于实现分布式锁等场景。
+        """
+        if self._client is None:
+            await self.connect()
+        return bool(await self._client.set(key, value, ex=expire, nx=True))
     
     async def setex(self, key: str, seconds: int, value: str) -> bool:
         """
