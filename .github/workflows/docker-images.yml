@@ -21,7 +21,6 @@ jobs:
     outputs:
       web: ${{ steps.normalize.outputs.web }}
       backend: ${{ steps.normalize.outputs.backend }}
-      plugin: ${{ steps.normalize.outputs.plugin }}
       tag_name: ${{ steps.tag.outputs.tag_name }}
     steps:
       - name: Force build all on manual dispatch or tag
@@ -30,7 +29,6 @@ jobs:
         run: |
           echo "web=true" >> $GITHUB_OUTPUT
           echo "backend=true" >> $GITHUB_OUTPUT
-          echo "plugin=true" >> $GITHUB_OUTPUT
 
       - name: Checkout
         if: steps.force.outputs.web != 'true'
@@ -54,9 +52,6 @@ jobs:
             backend:
               - 'AntiHub-Backend/**'
               - '!AntiHub-Backend/**/*.md'
-            plugin:
-              - 'AntiHub-plugin/**'
-              - '!AntiHub-plugin/**/*.md'
 
       - name: Normalize build outputs
         id: normalize
@@ -76,14 +71,6 @@ jobs:
             echo "backend=true" >> $GITHUB_OUTPUT
           else
             echo "backend=false" >> $GITHUB_OUTPUT
-          fi
-
-          if [ "${{ steps.force.outputs.plugin }}" = "true" ]; then
-            echo "plugin=true" >> $GITHUB_OUTPUT
-          elif [ "${{ steps.filter.outputs.plugin }}" = "true" ]; then
-            echo "plugin=true" >> $GITHUB_OUTPUT
-          else
-            echo "plugin=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Extract and normalize tag name
@@ -241,89 +228,6 @@ jobs:
       - name: Create and push multi-arch manifest (backend)
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/antihub-backend"
-          BUILD_TAG="build-${{ github.run_id }}"
-
-          # 根据分支决定标签
-          if [[ "${{ github.ref_name }}" == "Beta" ]]; then
-            LATEST_TAG="beta"
-          else
-            LATEST_TAG="latest"
-          fi
-
-          docker buildx imagetools create -t ${IMAGE}:${LATEST_TAG} \
-            ${IMAGE}:${BUILD_TAG}-amd64 \
-            ${IMAGE}:${BUILD_TAG}-arm64
-
-          docker buildx imagetools create -t ${IMAGE}:sha-${GITHUB_SHA::7} \
-            ${IMAGE}:${BUILD_TAG}-amd64 \
-            ${IMAGE}:${BUILD_TAG}-arm64
-
-          if [[ "${{ needs.changes.outputs.tag_name }}" != "" ]]; then
-            docker buildx imagetools create -t ${IMAGE}:${{ needs.changes.outputs.tag_name }} \
-              ${IMAGE}:${BUILD_TAG}-amd64 \
-              ${IMAGE}:${BUILD_TAG}-arm64
-          fi
-
-  # ============ Plugin ============
-  build-plugin:
-    needs: changes
-    if: needs.changes.outputs.plugin == 'true' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            platform: linux/amd64
-            suffix: amd64
-          - runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            suffix: arm64
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build & push (plugin-${{ matrix.suffix }})
-        uses: docker/build-push-action@v6
-        with:
-          context: ./AntiHub-plugin
-          file: ./AntiHub-plugin/Dockerfile
-          push: true
-          platforms: ${{ matrix.platform }}
-          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/antihub-plugin:build-${{ github.run_id }}-${{ matrix.suffix }}
-          cache-from: type=gha,scope=plugin-${{ matrix.suffix }}
-          cache-to: type=gha,mode=max,scope=plugin-${{ matrix.suffix }}
-
-  merge-plugin:
-    needs: [changes, build-plugin]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push multi-arch manifest (plugin)
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/antihub-plugin"
           BUILD_TAG="build-${{ github.run_id }}"
 
           # 根据分支决定标签
