@@ -5,7 +5,7 @@ Plug-in API相关的路由
 from typing import Optional
 import time
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
 
 from app.api.deps import get_current_user, get_user_from_api_key, get_plugin_api_service
@@ -33,6 +33,20 @@ from app.schemas.plugin_api import (
 
 
 router = APIRouter(prefix="/plugin-api", tags=["Plug-in API"])
+
+
+def _raise_value_error(e: ValueError) -> None:
+    """
+    将 service 层的 ValueError 映射为对前端更友好的 HTTP 错误码。
+
+    约定：
+    - “账号不存在/配额记录不存在” => 404
+    - 其它参数/业务校验 => 400
+    """
+    message = str(e)
+    if message in ("账号不存在", "配额记录不存在"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
 
 # ==================== 密钥管理 ====================
@@ -225,10 +239,7 @@ async def get_account(
         result = await service.get_account(current_user.id, cookie_id)
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -257,7 +268,7 @@ async def get_account_credentials(
             detail = error_data
         raise HTTPException(status_code=e.response.status_code, detail=detail)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        _raise_value_error(e)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -280,10 +291,7 @@ async def get_account_detail(
         result = await service.get_account_detail(current_user.id, cookie_id)
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -318,10 +326,7 @@ async def refresh_account(
             detail=detail
         )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -352,7 +357,7 @@ async def get_account_projects(
             detail = error_data
         raise HTTPException(status_code=e.response.status_code, detail=detail)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        _raise_value_error(e)
     except Exception:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="获取项目列表失败")
 
@@ -381,7 +386,7 @@ async def update_account_project_id(
             detail = error_data
         raise HTTPException(status_code=e.response.status_code, detail=detail)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        _raise_value_error(e)
     except Exception:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新Project ID失败")
 
@@ -406,10 +411,7 @@ async def update_account_status(
         )
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -435,10 +437,7 @@ async def delete_account(
         )
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -466,10 +465,7 @@ async def update_account_name(
         )
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -506,22 +502,8 @@ async def update_account_type(
             is_shared=request.is_shared
         )
         return result
-    except httpx.HTTPStatusError as e:
-        # 透传上游API的错误响应
-        error_data = getattr(e, 'response_data', {"detail": str(e)})
-        if isinstance(error_data, dict) and 'detail' in error_data:
-            detail = error_data['detail']
-        else:
-            detail = error_data
-        raise HTTPException(
-            status_code=e.response.status_code,
-            detail=detail
-        )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -547,10 +529,7 @@ async def get_account_quotas(
         )
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -580,10 +559,7 @@ async def update_model_quota_status(
         )
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -607,10 +583,7 @@ async def get_user_quotas(
         result = await service.get_user_quotas(current_user.id)
         return result
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        _raise_value_error(e)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -625,22 +598,15 @@ async def get_user_quotas(
 )
 async def get_shared_pool_quotas(
     current_user: User = Depends(get_current_user),
-    service: PluginAPIService = Depends(get_plugin_api_service)
 ):
     """获取共享池配额"""
-    try:
-        result = await service.get_shared_pool_quotas(current_user.id)
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"获取共享池配额失败"
-        )
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "共享池配额已弃用",
+            "alternative": "/api/plugin-api/quotas/user",
+        },
+    )
 
 
 @router.get(
@@ -653,27 +619,15 @@ async def get_quota_consumption(
     start_date: Optional[str] = Query(None, description="开始日期"),
     end_date: Optional[str] = Query(None, description="结束日期"),
     current_user: User = Depends(get_current_user),
-    service: PluginAPIService = Depends(get_plugin_api_service)
 ):
     """获取配额消耗记录"""
-    try:
-        result = await service.get_quota_consumption(
-            user_id=current_user.id,
-            limit=limit,
-            start_date=start_date,
-            end_date=end_date
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"获取配额消耗记录失败"
-        )
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "配额消耗记录接口已弃用",
+            "alternative": "/api/usage/requests/*",
+        },
+    )
 
 
 # ==================== OpenAI兼容接口 ====================
@@ -901,23 +855,19 @@ async def chat_completions(
 )
 async def get_cookie_preference(
     current_user: User = Depends(get_current_user),
-    service: PluginAPIService = Depends(get_plugin_api_service)
 ):
     """获取用户信息和Cookie优先级设置"""
-    try:
-        # 从plug-in-api获取用户信息
-        result = await service.get_user_info(current_user.id)
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"获取用户信息失败"
-        )
+    return {
+        "success": True,
+        "data": {
+            "user_id": str(current_user.id),
+            "name": current_user.username,
+            "prefer_shared": 0,
+            "status": 1 if current_user.is_active else 0,
+            "created_at": current_user.created_at,
+            "updated_at": current_user.updated_at,
+        },
+    }
 
 
 @router.put(
@@ -926,38 +876,15 @@ async def get_cookie_preference(
     description="更新用户的Cookie使用优先级设置"
 )
 async def update_cookie_preference(
-    request: UpdateCookiePreferenceRequest,
     current_user: User = Depends(get_current_user),
-    service: PluginAPIService = Depends(get_plugin_api_service)
 ):
     """更新Cookie优先级"""
-    try:
-        # 获取plugin_user_id
-        key_record = await service.repo.get_by_user_id(current_user.id)
-        if not key_record or not key_record.plugin_user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="未找到plug-in用户ID"
-            )
-        
-        result = await service.update_cookie_preference(
-            user_id=current_user.id,
-            plugin_user_id=key_record.plugin_user_id,
-            prefer_shared=request.prefer_shared
-        )
-        return result
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"更新Cookie优先级失败"
-        )
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "Cookie 优先级（prefer_shared）机制已弃用",
+        },
+    )
 
 
 # ==================== Gemini图片生成API ====================

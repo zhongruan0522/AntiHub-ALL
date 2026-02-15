@@ -7,15 +7,20 @@ Plug-in API服务
 - plugin_api_key 缓存 TTL 为 60 秒
 """
 from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
+from uuid import uuid4
 import httpx
 import logging
 import asyncio
 import json
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, delete, func
 
 from app.core.config import get_settings
 from app.repositories.plugin_api_key_repository import PluginAPIKeyRepository
 from app.utils.encryption import encrypt_api_key, decrypt_api_key
+from app.models.antigravity_account import AntigravityAccount
+from app.models.antigravity_model_quota import AntigravityModelQuota
 from app.schemas.plugin_api import (
     PluginAPIKeyCreate,
     PluginAPIKeyResponse,
@@ -57,6 +62,57 @@ class PluginAPIService:
     def _get_cache_key(self, user_id: int) -> str:
         """生成缓存键"""
         return f"plugin_api_key:{user_id}"
+
+    def _dt_to_ms(self, dt: Optional[datetime]) -> Optional[int]:
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+
+    def _serialize_antigravity_account(self, account: AntigravityAccount) -> Dict[str, Any]:
+        return {
+            "cookie_id": account.cookie_id,
+            "user_id": account.user_id,
+            "name": account.account_name,
+            # shared 概念合并后移除：对外 contract 仍保留字段，但固定为 0
+            "is_shared": 0,
+            "status": int(account.status or 0),
+            "need_refresh": bool(account.need_refresh),
+            "expires_at": self._dt_to_ms(account.token_expires_at),
+            "project_id_0": account.project_id_0,
+            "is_restricted": bool(account.is_restricted),
+            "paid_tier": account.paid_tier,
+            "ineligible": bool(account.ineligible),
+            "last_used_at": account.last_used_at,
+            "created_at": account.created_at,
+            "updated_at": account.updated_at,
+        }
+
+    async def _get_antigravity_account(self, user_id: int, cookie_id: str) -> Optional[AntigravityAccount]:
+        result = await self.db.execute(
+            select(AntigravityAccount).where(
+                AntigravityAccount.user_id == user_id,
+                AntigravityAccount.cookie_id == cookie_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    def _decrypt_credentials_json(self, encrypted_json: str) -> Dict[str, Any]:
+        try:
+            plaintext = decrypt_api_key(encrypted_json)
+        except Exception as e:
+            raise ValueError(f"凭证解密失败: {e}")
+
+        try:
+            data = json.loads(plaintext)
+        except Exception as e:
+            raise ValueError(f"凭证解析失败: {e}")
+
+        if not isinstance(data, dict):
+            raise ValueError("凭证格式非法：期望 JSON object")
+
+        return data
     
     # ==================== 密钥管理 ====================
     
@@ -496,11 +552,14 @@ class PluginAPIService:
         - ineligible: 是否不合格
         以及其他账号相关字段
         """
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path="/api/accounts"
+        result = await self.db.execute(
+            select(AntigravityAccount)
+            .where(AntigravityAccount.user_id == user_id)
+            .order_by(AntigravityAccount.id.asc())
         )
+        accounts = result.scalars().all()
+
+        return {"success": True, "data": [self._serialize_antigravity_account(a) for a in accounts]}
 
     async def import_account_by_refresh_token(
         self,
@@ -509,23 +568,61 @@ class PluginAPIService:
         is_shared: int = 0
     ) -> Dict[str, Any]:
         """通过 refresh_token 导入账号（无需走 OAuth 回调）"""
-        return await self.proxy_request(
+        if not refresh_token or not isinstance(refresh_token, str) or not refresh_token.strip():
+            raise ValueError("缺少refresh_token参数")
+
+        # 合并后不支持 shared 语义，但为兼容保留入参；仅允许 0
+        if is_shared not in (0, 1):
+            raise ValueError("is_shared必须是0或1")
+        if is_shared == 1:
+            raise ValueError("合并后不支持共享账号（is_shared=1）")
+
+        cookie_id = str(uuid4())
+        credentials_payload = {
+            "type": "antigravity",
+            "cookie_id": cookie_id,
+            "is_shared": 0,
+            "access_token": None,
+            "refresh_token": refresh_token.strip(),
+            "expires_at": None,
+            # report 约定：保留原始 ms 值（如有）；此处导入阶段未知
+            "expires_at_ms": None,
+        }
+
+        encrypted_credentials = encrypt_api_key(json.dumps(credentials_payload, ensure_ascii=False))
+
+        account = AntigravityAccount(
             user_id=user_id,
-            method="POST",
-            path="/api/accounts/import",
-            json_data={
-                "refresh_token": refresh_token,
-                "is_shared": is_shared
-            }
+            cookie_id=cookie_id,
+            account_name="Imported",
+            email=None,
+            project_id_0=None,
+            status=1,
+            need_refresh=False,
+            is_restricted=False,
+            paid_tier=None,
+            ineligible=False,
+            token_expires_at=None,
+            last_refresh_at=None,
+            last_used_at=None,
+            credentials=encrypted_credentials,
         )
+        self.db.add(account)
+        await self.db.flush()
+        await self.db.refresh(account)
+
+        return {
+            "success": True,
+            "message": "账号导入成功",
+            "data": self._serialize_antigravity_account(account),
+        }
     
     async def get_account(self, user_id: int, cookie_id: str) -> Dict[str, Any]:
         """获取单个账号信息"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path=f"/api/accounts/{cookie_id}"
-        )
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+        return {"success": True, "data": self._serialize_antigravity_account(account)}
 
     async def get_account_credentials(self, user_id: int, cookie_id: str) -> Dict[str, Any]:
         """
@@ -535,44 +632,120 @@ class PluginAPIService:
         - 仅用于用户自助导出/备份（前端“复制凭证为JSON”）
         - 实际鉴权在 plug-in API 层完成（仅账号所有者/管理员可访问）
         """
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path=f"/api/accounts/{cookie_id}/credentials",
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        creds = self._decrypt_credentials_json(account.credentials)
+        expires_at = (
+            creds.get("expires_at")
+            if creds.get("expires_at") is not None
+            else (creds.get("expires_at_ms") if creds.get("expires_at_ms") is not None else None)
         )
+
+        credentials = {
+            "type": "antigravity",
+            "cookie_id": account.cookie_id,
+            "is_shared": 0,
+            "access_token": creds.get("access_token"),
+            "refresh_token": creds.get("refresh_token"),
+            "expires_at": expires_at if expires_at is not None else self._dt_to_ms(account.token_expires_at),
+        }
+
+        export_data = {
+            k: v
+            for k, v in credentials.items()
+            if v is not None and not (isinstance(v, str) and v.strip() == "")
+        }
+
+        return {"success": True, "data": export_data}
 
     async def get_account_detail(self, user_id: int, cookie_id: str) -> Dict[str, Any]:
         """获取单个账号的详情信息（邮箱/订阅层级等）"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path=f"/api/accounts/{cookie_id}/detail",
-        )
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        return {
+            "success": True,
+            "data": {
+                "cookie_id": account.cookie_id,
+                "name": account.account_name,
+                "email": account.email,
+                "created_at": account.created_at,
+                "paid_tier": bool(account.paid_tier) if account.paid_tier is not None else False,
+                "subscription_tier": None,
+                "subscription_tier_raw": None,
+            },
+        }
 
     async def refresh_account(self, user_id: int, cookie_id: str) -> Dict[str, Any]:
         """刷新账号（强制刷新 access_token + 更新 project_id_0）"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="POST",
-            path=f"/api/accounts/{cookie_id}/refresh",
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        creds = self._decrypt_credentials_json(account.credentials)
+        refresh_token = creds.get("refresh_token")
+        if not refresh_token:
+            raise ValueError("账号缺少refresh_token，无法刷新")
+
+        now = datetime.now(timezone.utc)
+        await self.db.execute(
+            update(AntigravityAccount)
+            .where(
+                AntigravityAccount.user_id == user_id,
+                AntigravityAccount.cookie_id == cookie_id,
+            )
+            .values(last_refresh_at=now, need_refresh=False)
         )
+        await self.db.flush()
+        updated = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        return {"success": True, "data": self._serialize_antigravity_account(updated)}
     
     async def get_account_projects(self, user_id: int, cookie_id: str) -> Dict[str, Any]:
         """获取账号可见的 GCP Project 列表"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path=f"/api/accounts/{cookie_id}/projects",
-        )
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        creds = self._decrypt_credentials_json(account.credentials)
+        if not creds.get("refresh_token"):
+            raise ValueError("账号缺少refresh_token，无法获取项目列表")
+
+        current_project_id = (account.project_id_0 or "").strip()
+        default_project_id = current_project_id
+        projects = []
+        if default_project_id:
+            projects.append({"project_id": default_project_id, "name": "default"})
+
+        return {
+            "success": True,
+            "data": {
+                "cookie_id": cookie_id,
+                "current_project_id": current_project_id,
+                "default_project_id": default_project_id,
+                "projects": projects,
+            },
+        }
 
     async def update_account_project_id(self, user_id: int, cookie_id: str, project_id: str) -> Dict[str, Any]:
         """更新账号 Project ID"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="PUT",
-            path=f"/api/accounts/{cookie_id}/project-id",
-            json_data={"project_id": project_id},
+        if not project_id or not isinstance(project_id, str) or not project_id.strip():
+            raise ValueError("project_id不能为空")
+
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        await self.db.execute(
+            update(AntigravityAccount)
+            .where(AntigravityAccount.user_id == user_id, AntigravityAccount.cookie_id == cookie_id)
+            .values(project_id_0=project_id.strip())
         )
+        await self.db.flush()
+        updated = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        return {"success": True, "message": "Project ID已更新", "data": self._serialize_antigravity_account(updated)}
 
     async def update_account_status(
         self,
@@ -581,12 +754,31 @@ class PluginAPIService:
         status: int
     ) -> Dict[str, Any]:
         """更新账号状态"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="PUT",
-            path=f"/api/accounts/{cookie_id}/status",
-            json_data={"status": status}
+        if status not in (0, 1):
+            raise ValueError("status必须是0或1")
+
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        if int(account.status or 0) == int(status):
+            return {
+                "success": True,
+                "message": "账号状态未变化",
+                "data": {"cookie_id": account.cookie_id, "status": int(account.status or 0)},
+            }
+
+        await self.db.execute(
+            update(AntigravityAccount)
+            .where(AntigravityAccount.user_id == user_id, AntigravityAccount.cookie_id == cookie_id)
+            .values(status=int(status))
         )
+        await self.db.flush()
+        return {
+            "success": True,
+            "message": f"账号状态已更新为{'启用' if status == 1 else '禁用'}",
+            "data": {"cookie_id": cookie_id, "status": int(status)},
+        }
     
     async def delete_account(
         self,
@@ -594,11 +786,18 @@ class PluginAPIService:
         cookie_id: str
     ) -> Dict[str, Any]:
         """删除账号"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="DELETE",
-            path=f"/api/accounts/{cookie_id}"
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        await self.db.execute(delete(AntigravityModelQuota).where(AntigravityModelQuota.cookie_id == cookie_id))
+        await self.db.execute(
+            delete(AntigravityAccount).where(
+                AntigravityAccount.user_id == user_id, AntigravityAccount.cookie_id == cookie_id
+            )
         )
+        await self.db.flush()
+        return {"success": True, "message": "账号已删除"}
     
     async def update_account_name(
         self,
@@ -607,12 +806,26 @@ class PluginAPIService:
         name: str
     ) -> Dict[str, Any]:
         """更新账号名称"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="PUT",
-            path=f"/api/accounts/{cookie_id}/name",
-            json_data={"name": name}
+        if name is None:
+            raise ValueError("name是必需的")
+        if not isinstance(name, str) or len(name) > 100:
+            raise ValueError("name必须是字符串且长度不超过100")
+
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        await self.db.execute(
+            update(AntigravityAccount)
+            .where(AntigravityAccount.user_id == user_id, AntigravityAccount.cookie_id == cookie_id)
+            .values(account_name=name)
         )
+        await self.db.flush()
+        return {
+            "success": True,
+            "message": "账号名称已更新",
+            "data": {"cookie_id": cookie_id, "name": name},
+        }
     
     async def get_account_quotas(
         self,
@@ -620,27 +833,87 @@ class PluginAPIService:
         cookie_id: str
     ) -> Dict[str, Any]:
         """获取账号配额信息"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path=f"/api/accounts/{cookie_id}/quotas"
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        result = await self.db.execute(
+            select(AntigravityModelQuota)
+            .where(AntigravityModelQuota.cookie_id == cookie_id)
+            .order_by(AntigravityModelQuota.quota.asc())
         )
+        quotas = result.scalars().all()
+        data = [
+            {
+                "id": q.id,
+                "cookie_id": q.cookie_id,
+                "model_name": q.model_name,
+                "reset_time": q.reset_at,
+                "quota": q.quota,
+                "status": q.status,
+                "last_fetched_at": q.last_fetched_at,
+                "created_at": q.created_at,
+                "updated_at": q.updated_at,
+            }
+            for q in quotas
+        ]
+
+        return {"success": True, "data": data}
     
     async def get_user_quotas(self, user_id: int) -> Dict[str, Any]:
-        """获取用户共享配额池"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path="/api/quotas/user"
+        """
+        用户维度“模型配额概览”。
+
+        report 建议实现：
+        - 每个 model_name 取 quota 最大的账号作为该模型的可用额度
+        - 字段沿用前端 UserQuotaItem：pool_id/user_id/model_name/quota/max_quota/last_recovered_at/last_updated_at
+        """
+        stmt = (
+            select(
+                AntigravityModelQuota.model_name.label("model_name"),
+                func.max(AntigravityModelQuota.quota).label("quota"),
+                func.max(AntigravityModelQuota.updated_at).label("last_updated_at"),
+                func.max(AntigravityModelQuota.reset_at).label("last_recovered_at"),
+            )
+            .select_from(AntigravityModelQuota)
+            .join(
+                AntigravityAccount,
+                AntigravityAccount.cookie_id == AntigravityModelQuota.cookie_id,
+            )
+            .where(
+                AntigravityAccount.user_id == user_id,
+                AntigravityAccount.status == 1,
+                AntigravityModelQuota.status == 1,
+            )
+            .group_by(AntigravityModelQuota.model_name)
+            .order_by(AntigravityModelQuota.model_name.asc())
         )
+        result = await self.db.execute(stmt)
+        rows = result.mappings().all()
+
+        items = []
+        for r in rows:
+            model_name = r["model_name"]
+            quota = float(r["quota"] or 0)
+            last_updated_at = r["last_updated_at"]
+            last_recovered_at = r["last_recovered_at"] or last_updated_at
+
+            items.append(
+                {
+                    "pool_id": str(model_name),
+                    "user_id": str(user_id),
+                    "model_name": str(model_name),
+                    "quota": str(quota),
+                    "max_quota": "1",
+                    "last_recovered_at": last_recovered_at.isoformat() if last_recovered_at else "",
+                    "last_updated_at": last_updated_at.isoformat() if last_updated_at else "",
+                }
+            )
+
+        return {"success": True, "data": items}
     
     async def get_shared_pool_quotas(self, user_id: int) -> Dict[str, Any]:
-        """获取共享池配额"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path="/api/quotas/shared-pool"
-        )
+        raise ValueError("共享池配额已弃用")
     
     async def get_quota_consumption(
         self,
@@ -658,12 +931,7 @@ class PluginAPIService:
         if end_date:
             params["end_date"] = end_date
         
-        return await self.proxy_request(
-            user_id=user_id,
-            method="GET",
-            path="/api/quotas/consumption",
-            params=params
-        )
+        raise ValueError("配额消耗记录已弃用")
     
     async def get_models(self, user_id: int, config_type: Optional[str] = None) -> Dict[str, Any]:
         """获取可用模型列表"""
@@ -709,12 +977,38 @@ class PluginAPIService:
         status: int
     ) -> Dict[str, Any]:
         """更新模型配额状态"""
-        return await self.proxy_request(
-            user_id=user_id,
-            method="PUT",
-            path=f"/api/accounts/{cookie_id}/quotas/{model_name}/status",
-            json_data={"status": status}
+        if status not in (0, 1):
+            raise ValueError("status必须是0或1")
+
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        result = await self.db.execute(
+            select(AntigravityModelQuota).where(
+                AntigravityModelQuota.cookie_id == cookie_id,
+                AntigravityModelQuota.model_name == model_name,
+            )
         )
+        quota = result.scalar_one_or_none()
+        if not quota:
+            raise ValueError("配额记录不存在")
+
+        await self.db.execute(
+            update(AntigravityModelQuota)
+            .where(
+                AntigravityModelQuota.cookie_id == cookie_id,
+                AntigravityModelQuota.model_name == model_name,
+            )
+            .values(status=int(status))
+        )
+        await self.db.flush()
+
+        return {
+            "success": True,
+            "message": f"模型配额状态已更新为{'启用' if status == 1 else '禁用'}",
+            "data": {"cookie_id": cookie_id, "model_name": model_name, "status": int(status)},
+        }
     
     async def update_account_type(
         self,
@@ -735,12 +1029,20 @@ class PluginAPIService:
         Returns:
             更新结果
         """
-        return await self.proxy_request(
-            user_id=user_id,
-            method="PUT",
-            path=f"/api/accounts/{cookie_id}/type",
-            json_data={"is_shared": is_shared}
-        )
+        if is_shared not in (0, 1):
+            raise ValueError("is_shared必须是0或1")
+        if is_shared == 1:
+            raise ValueError("合并后不支持共享账号（is_shared=1）")
+
+        account = await self._get_antigravity_account(user_id=user_id, cookie_id=cookie_id)
+        if not account:
+            raise ValueError("账号不存在")
+
+        return {
+            "success": True,
+            "message": "账号类型已更新为专属",
+            "data": {"cookie_id": cookie_id, "is_shared": 0},
+        }
     
     # ==================== 图片生成API ====================
     
