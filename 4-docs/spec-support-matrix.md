@@ -55,11 +55,11 @@ cp .env.example .env
 2) 启动（仅启动后端联调需要的最小组件）：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build postgres redis plugin backend
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build postgres redis backend
 ```
 
 说明：
-- `docker-compose.local.yml` 会把 `backend/plugin` 切换为本地构建。
+- `docker-compose.local.yml` 会把 `backend` 切换为本地构建。
 - `web` 不需要参与本次 OpenAI 兼容接口的 smoke（除非你要验证页面）。
 
 ## 5. Smoke（PowerShell，可复制粘贴）
@@ -115,7 +115,7 @@ $resp.Content.ReadAsStringAsync().Result
 
 期望：
 - status **不是** 403
-- 如果未配置 plug-in API key：返回 400，且 body 提示用户未配置
+- 如果未配置对应账号/凭证：返回 400，且 body 提示用户未配置/不可用
 - 如果已配置：返回 `candidates` 结构的 Gemini JSON
 
 ## 6. SSE / 反代缓冲注意事项
