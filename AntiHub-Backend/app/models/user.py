@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from app.models.api_key import APIKey
     from app.models.codex_account import CodexAccount
     from app.models.gemini_cli_account import GeminiCLIAccount
+    from app.models.antigravity_account import AntigravityAccount
     from app.models.zai_tts_account import ZaiTTSAccount
     from app.models.zai_image_account import ZaiImageAccount
 
@@ -144,6 +145,12 @@ class User(Base):
 
     gemini_cli_accounts: Mapped[list["GeminiCLIAccount"]] = relationship(
         "GeminiCLIAccount",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    antigravity_accounts: Mapped[list["AntigravityAccount"]] = relationship(
+        "AntigravityAccount",
         back_populates="user",
         cascade="all, delete-orphan",
     )

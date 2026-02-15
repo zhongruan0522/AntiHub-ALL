@@ -14,6 +14,8 @@ from app.models.user_setting import UserSetting
 from app.models.zai_tts_account import ZaiTTSAccount
 from app.models.zai_image_account import ZaiImageAccount
 from app.models.usage_counter import UsageCounter
+from app.models.antigravity_account import AntigravityAccount
+from app.models.antigravity_model_quota import AntigravityModelQuota
 
 __all__ = [
     "User",
@@ -28,4 +30,6 @@ __all__ = [
     "ZaiTTSAccount",
     "ZaiImageAccount",
     "UsageCounter",
+    "AntigravityAccount",
+    "AntigravityModelQuota",
 ]
