@@ -32,7 +32,13 @@ from app.cache import get_redis_client, RedisClient
 from app.core.config import get_settings
 from app.models.kiro_account import KiroAccount
 from app.models.kiro_subscription_model import KiroSubscriptionModel
-from app.services.kiro_anthropic_converter import KiroAnthropicConverter
+from app.services.kiro_anthropic_converter import (
+    EDIT_TOOL_DESCRIPTION_SUFFIX,
+    SYSTEM_CHUNKED_POLICY,
+    WRITE_TOOL_DESCRIPTION_SUFFIX,
+    KiroAnthropicConverter,
+)
+from app.utils.aws_eventstream import AwsEventStreamDecoder, AwsEventStreamParseError
 from app.utils.encryption import decrypt_api_key, encrypt_api_key
 
 logger = logging.getLogger(__name__)
@@ -985,6 +991,12 @@ class KiroService:
             if not desc_str:
                 desc_str = f"Tool: {name}"
 
+            # Align kiro.rs: enforce chunked-write hints for Claude Code tools.
+            if name == "Write" and WRITE_TOOL_DESCRIPTION_SUFFIX not in desc_str:
+                desc_str = f"{desc_str}\n{WRITE_TOOL_DESCRIPTION_SUFFIX}"
+            elif name == "Edit" and EDIT_TOOL_DESCRIPTION_SUFFIX not in desc_str:
+                desc_str = f"{desc_str}\n{EDIT_TOOL_DESCRIPTION_SUFFIX}"
+
             parameters = fn.get("parameters")
             schema_obj = parameters if isinstance(parameters, dict) else {}
             if schema_obj.get("type") is None:
@@ -1050,6 +1062,8 @@ class KiroService:
 
         system_text = "\n".join([p for p in system_parts if p]).strip()
         if system_text:
+            if SYSTEM_CHUNKED_POLICY not in system_text:
+                system_text = f"{system_text}\n{SYSTEM_CHUNKED_POLICY}"
             history.append(
                 {
                     "userInputMessage": {
@@ -1063,58 +1077,78 @@ class KiroService:
             )
             history.append({"assistantResponseMessage": {"content": "I will follow these instructions."}})
 
-        # history: all but last
-        for msg in non_system[:-1]:
-            role = str(msg.get("role") or "").strip().lower()
-            if role == "assistant":
-                tool_uses = self._extract_openai_tool_uses(msg)
-                text = self._extract_openai_text_content(msg.get("content"))
-                if not text and tool_uses:
-                    text = "There is a tool use."
-                assistant: Dict[str, Any] = {"content": text}
-                if tool_uses:
-                    assistant["toolUses"] = tool_uses
-                history.append({"assistantResponseMessage": assistant})
-                continue
+        # history: all but last (align kiro.rs: merge consecutive user/tool messages, ensure pairs)
+        user_buffer: List[Dict[str, Any]] = []
 
-            if role in ("tool", "function"):
-                tool_call_id = str(msg.get("tool_call_id") or msg.get("toolCallId") or "").strip()
-                tool_text = self._extract_openai_text_content(msg.get("content"))
-                ctx: Dict[str, Any] = {}
-                if tool_call_id:
-                    ctx["toolResults"] = [
-                        {
-                            "toolUseId": tool_call_id,
-                            "content": [{"text": tool_text}],
-                            "status": "success",
-                        }
-                    ]
-                history.append(
-                    {
-                        "userInputMessage": {
-                            "userInputMessageContext": ctx,
-                            "content": "",
-                            "modelId": model_id,
-                            "images": [],
-                            "origin": "AI_EDITOR",
-                        }
-                    }
-                )
-                continue
+        def _flush_user_buffer() -> None:
+            nonlocal user_buffer
+            if not user_buffer:
+                return
 
-            # default: treat as user
-            text = self._extract_openai_text_content(msg.get("content"))
+            text_parts: List[str] = []
+            tool_results: List[Dict[str, Any]] = []
+
+            for m in user_buffer:
+                role = str(m.get("role") or "").strip().lower()
+                if role in ("tool", "function"):
+                    tool_call_id = str(m.get("tool_call_id") or m.get("toolCallId") or "").strip()
+                    tool_text = self._extract_openai_text_content(m.get("content"))
+                    if tool_call_id:
+                        tool_results.append(
+                            {
+                                "toolUseId": tool_call_id,
+                                "content": [{"text": tool_text}],
+                                "status": "success",
+                            }
+                        )
+                    continue
+
+                # default: treat as user
+                text = self._extract_openai_text_content(m.get("content"))
+                if text:
+                    text_parts.append(text)
+
+            ctx: Dict[str, Any] = {}
+            if tool_results:
+                ctx["toolResults"] = tool_results
+
             history.append(
                 {
                     "userInputMessage": {
-                        "userInputMessageContext": {},
-                        "content": text,
+                        "userInputMessageContext": ctx,
+                        "content": "\n".join(text_parts).strip(),
                         "modelId": model_id,
                         "images": [],
                         "origin": "AI_EDITOR",
                     }
                 }
             )
+            user_buffer = []
+
+        for msg in non_system[:-1]:
+            role = str(msg.get("role") or "").strip().lower()
+            if role == "assistant":
+                if not user_buffer:
+                    # Align kiro.rs: ignore orphan assistant to keep history in user->assistant pairs.
+                    continue
+                _flush_user_buffer()
+
+                tool_uses = self._extract_openai_tool_uses(msg)
+                text = self._extract_openai_text_content(msg.get("content"))
+                if not text and tool_uses:
+                    text = " "
+                assistant: Dict[str, Any] = {"content": text}
+                if tool_uses:
+                    assistant["toolUses"] = tool_uses
+                history.append({"assistantResponseMessage": assistant})
+                continue
+
+            # user/tool/function are buffered and merged
+            user_buffer.append(msg)
+
+        if user_buffer:
+            _flush_user_buffer()
+            history.append({"assistantResponseMessage": {"content": "OK"}})
 
         # current message
         last = non_system[-1]
@@ -1126,7 +1160,7 @@ class KiroService:
             tool_uses = self._extract_openai_tool_uses(last)
             text = self._extract_openai_text_content(last.get("content"))
             if not text and tool_uses:
-                text = "There is a tool use."
+                text = " "
             assistant: Dict[str, Any] = {"content": text}
             if tool_uses:
                 assistant["toolUses"] = tool_uses
@@ -1495,64 +1529,147 @@ class KiroService:
                 yield _openai_sse_done()
                 return
 
-            parser = _KiroAwsEventStreamParser()
+            decoder = AwsEventStreamDecoder()
             content_parts: List[str] = []
             context_usage_percentage: Optional[float] = None
+            finish_reason_override: Optional[str] = None
+
+            tool_json_buffers: Dict[str, str] = {}
+            tool_calls: List[Dict[str, Any]] = []
 
             async for chunk in resp.aiter_raw():
                 if not chunk:
                     continue
-                events = parser.feed(chunk)
-                for ev in events:
-                    ev_type = ev.get("type")
-                    if ev_type == "context_usage":
-                        value = ev.get("data")
-                        try:
-                            context_usage_percentage = float(value)  # type: ignore[arg-type]
-                        except Exception:
-                            context_usage_percentage = context_usage_percentage
+                try:
+                    decoder.feed(chunk)
+                except AwsEventStreamParseError as e:
+                    logger.warning("Kiro eventstream feed failed: %s", e)
+                    continue
+
+                for frame in decoder.decode_iter():
+                    msg_type = (frame.message_type or "event").strip()
+
+                    if msg_type == "event":
+                        ev_type = (frame.event_type or "").strip()
+
+                        if ev_type == "assistantResponseEvent":
+                            try:
+                                data = json.loads(frame.payload)
+                            except Exception:
+                                continue
+                            if not isinstance(data, dict):
+                                continue
+                            text = data.get("content")
+                            if not isinstance(text, str) or not text:
+                                continue
+
+                            content_parts.append(text)
+                            delta: Dict[str, Any] = {"content": text}
+                            if first_chunk:
+                                delta["role"] = "assistant"
+                                first_chunk = False
+                            openai_chunk = {
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "created": created_time,
+                                "model": model,
+                                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                            }
+                            yield _openai_sse_data(openai_chunk)
+                            continue
+
+                        if ev_type == "contextUsageEvent":
+                            try:
+                                data = json.loads(frame.payload)
+                            except Exception:
+                                continue
+                            if isinstance(data, dict):
+                                value = data.get("contextUsagePercentage")
+                                try:
+                                    context_usage_percentage = float(value)  # type: ignore[arg-type]
+                                except Exception:
+                                    context_usage_percentage = context_usage_percentage
+                            continue
+
+                        if ev_type == "toolUseEvent":
+                            try:
+                                data = json.loads(frame.payload)
+                            except Exception:
+                                continue
+                            if not isinstance(data, dict):
+                                continue
+
+                            name = data.get("name")
+                            if not isinstance(name, str) or not name.strip():
+                                continue
+
+                            tool_use_id = data.get("toolUseId")
+                            tool_id = (
+                                tool_use_id.strip()
+                                if isinstance(tool_use_id, str) and tool_use_id.strip()
+                                else f"call_{uuid4().hex[:24]}"
+                            )
+
+                            input_data = data.get("input", "")
+                            if isinstance(input_data, dict):
+                                input_piece = json.dumps(input_data, ensure_ascii=False)
+                            else:
+                                input_piece = str(input_data) if input_data else ""
+                            if input_piece:
+                                tool_json_buffers[tool_id] = tool_json_buffers.get(tool_id, "") + input_piece
+
+                            if data.get("stop"):
+                                args_text = tool_json_buffers.get(tool_id, "")
+                                normalized = "{}"
+                                if isinstance(args_text, str) and args_text.strip():
+                                    try:
+                                        parsed = json.loads(args_text)
+                                        if isinstance(parsed, (dict, list)):
+                                            normalized = json.dumps(parsed, ensure_ascii=False)
+                                    except Exception:
+                                        normalized = "{}"
+
+                                tc = {
+                                    "id": tool_id,
+                                    "type": "function",
+                                    "function": {"name": name.strip(), "arguments": normalized},
+                                }
+                                idx = len(tool_calls)
+                                tool_calls.append(tc)
+
+                                delta: Dict[str, Any] = {"tool_calls": [dict(tc, index=idx)]}
+                                if first_chunk:
+                                    delta["role"] = "assistant"
+                                    first_chunk = False
+
+                                tool_calls_chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created_time,
+                                    "model": model,
+                                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                                }
+                                yield _openai_sse_data(tool_calls_chunk)
+
+                                tool_json_buffers.pop(tool_id, None)
+                            continue
+
                         continue
 
-                    if ev_type != "content":
+                    if msg_type == "exception":
+                        ex_type = (frame.exception_type or "").strip()
+                        if ex_type == "ContentLengthExceededException":
+                            finish_reason_override = "length"
                         continue
-                    text = ev.get("data")
-                    if not isinstance(text, str) or not text:
-                        continue
-                    content_parts.append(text)
-                    delta: Dict[str, Any] = {"content": text}
-                    if first_chunk:
-                        delta["role"] = "assistant"
-                        first_chunk = False
-                    openai_chunk = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "created": created_time,
-                        "model": model,
-                        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
-                    }
-                    yield _openai_sse_data(openai_chunk)
 
-            tool_calls = parser.get_tool_calls()
-            finish_reason = "tool_calls" if tool_calls else "stop"
+                    if msg_type == "error":
+                        error_code = (frame.error_code or "UnknownError").strip() or "UnknownError"
+                        error_message = frame.payload.decode("utf-8", errors="replace")
+                        yield _openai_sse_error(f"{error_code}: {error_message[:2000]}", code=500)
+                        yield _openai_sse_done()
+                        return
 
-            if tool_calls:
-                indexed_tool_calls = []
-                for idx, tc in enumerate(tool_calls):
-                    if not isinstance(tc, dict):
-                        continue
-                    tc2 = dict(tc)
-                    tc2["index"] = idx
-                    indexed_tool_calls.append(tc2)
-
-                tool_calls_chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created_time,
-                    "model": model,
-                    "choices": [{"index": 0, "delta": {"tool_calls": indexed_tool_calls}, "finish_reason": None}],
-                }
-                yield _openai_sse_data(tool_calls_chunk)
-
+            finish_reason = finish_reason_override or ("tool_calls" if tool_calls else "stop")
             full_content = "".join(content_parts)
             completion_tokens = int(_count_tokens(full_content)) + _estimate_openai_tool_calls_tokens(tool_calls)
 

@@ -17,6 +17,28 @@ from app.utils.kiro_converters import generate_thinking_hint, inject_thinking_hi
 
 logger = logging.getLogger(__name__)
 
+WRITE_TOOL_DESCRIPTION_SUFFIX = (
+    "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 "
+    "lines using this tool, then use `Edit` tool to append the remaining content in chunks of no "
+    "more than 50 lines each. If needed, leave a unique placeholder to help append content. Do "
+    "NOT attempt to write all content at once."
+)
+
+EDIT_TOOL_DESCRIPTION_SUFFIX = (
+    "- IMPORTANT: If the `new_string` content exceeds 50 lines, you MUST split it into multiple "
+    "Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave "
+    "a unique placeholder to help append content. On the final chunk, do NOT include the "
+    "placeholder."
+)
+
+# 追加到 system 提示词末尾的分块写入策略（参考 kiro.rs）
+SYSTEM_CHUNKED_POLICY = (
+    "When the Write or Edit tool has content size limits, always comply silently. "
+    "Never suggest bypassing these limits via alternative tools. "
+    "Never ask the user whether to switch approaches. "
+    "Complete all chunked operations without commentary."
+)
+
 
 class KiroAnthropicConverter:
     """
@@ -82,12 +104,19 @@ class KiroAnthropicConverter:
         history: List[Dict[str, Any]] = []
         cls._append_system_history(history, request, model_id, thinking_cfg, output_config)
 
-        # messages 的最后一条作为 currentMessage，前面的都进入 history
-        for msg in request.messages[:-1]:
-            if getattr(msg, "role", None) == "user":
-                history.append(cls._convert_user_history_message(msg, model_id))
-            else:
-                history.append(cls._convert_assistant_history_message(msg))
+        # messages 的最后一条作为 currentMessage，前面的都进入 history。
+        #
+        # 对齐 kiro.rs：合并连续 user 消息，并确保 history 以 assistant 结尾（必要时自动补一个 OK）。
+        last = request.messages[-1]
+        last_role = str(getattr(last, "role", "") or "").strip().lower()
+
+        history_messages = request.messages[:-1]
+        if last_role == "assistant":
+            # Anthropic 允许以 assistant 结尾用于 continuation；Kiro currentMessage 只能是 userInputMessage。
+            # 这里把最后一条 assistant 纳入 history，并用一个 "Continue" 的 currentMessage 触发继续生成。
+            history_messages = request.messages[:]
+
+        history.extend(cls._build_history_from_messages(history_messages, model_id))
 
         # Kiro 对 tool_use/tool_result 的配对非常严格：history 里如果出现孤立/重复的 tool_result，会直接 400。
         # 参考 kiro.rs：对 tool_result 做配对过滤；但我们额外把“被过滤掉的 tool_result 内容”降级为纯文本，避免信息丢失。
@@ -98,8 +127,16 @@ class KiroAnthropicConverter:
         cls._ensure_tool_definitions(tools, history_tool_names)
 
         # 4) currentMessage（最后一条消息）
-        last = request.messages[-1]
-        current_text, current_images, current_tool_results = cls._process_user_content(getattr(last, "content", None))
+        current_text = ""
+        current_images: List[Dict[str, Any]] = []
+        current_tool_results: List[Dict[str, Any]] = []
+
+        if last_role == "assistant":
+            current_text = "Continue"
+        else:
+            current_text, current_images, current_tool_results = cls._process_user_content(
+                getattr(last, "content", None)
+            )
 
         # 5) 过滤 tool_use/tool_result 的配对，避免孤立/重复导致 Kiro 400
         validated_tool_results, orphaned_tool_use_ids = cls._validate_tool_pairing(history, current_tool_results)
@@ -117,7 +154,7 @@ class KiroAnthropicConverter:
 
         # 保守兜底：仅提供 tools 但内容为空时，给一个极短占位符，避免上游判定请求不规范
         if not current_text and not current_images and tools and not validated_tool_results:
-            current_text = "执行工具任务"
+            current_text = "Execute the tool task."
 
         # 再兜底一次：避免发出完全空的 currentMessage（某些上游会直接判定 Improperly formed request）
         if not current_text and not current_images and not validated_tool_results:
@@ -312,6 +349,11 @@ class KiroAnthropicConverter:
                     parts.append(text)
             system_text = "\n".join(parts)
 
+        # 对齐 kiro.rs：把分块写入策略追加到 system prompt 末尾（仅在 system 非空时追加）。
+        if system_text:
+            if SYSTEM_CHUNKED_POLICY not in system_text:
+                system_text = f"{system_text}\n{SYSTEM_CHUNKED_POLICY}"
+
         if is_thinking_enabled(thinking_cfg):
             if system_text:
                 system_text = inject_thinking_hint(system_text, thinking_cfg, output_config=output_config)
@@ -357,6 +399,15 @@ class KiroAnthropicConverter:
             if not desc:
                 # Kiro upstream 会校验 tool.description 不能为空；为空会直接 400
                 desc = "当前工具无说明"
+
+            # 对齐 kiro.rs：对 Write/Edit 工具追加分块写入的约束提示，避免 Write Failed/会话卡死。
+            if name == "Write":
+                if WRITE_TOOL_DESCRIPTION_SUFFIX not in desc:
+                    desc = f"{desc}\n{WRITE_TOOL_DESCRIPTION_SUFFIX}"
+            elif name == "Edit":
+                if EDIT_TOOL_DESCRIPTION_SUFFIX not in desc:
+                    desc = f"{desc}\n{EDIT_TOOL_DESCRIPTION_SUFFIX}"
+
             if len(desc) > 10000:
                 desc = desc[:10000]
 
@@ -518,6 +569,67 @@ class KiroAnthropicConverter:
         }
 
     @classmethod
+    def _merge_user_messages(cls, messages: List[Any], model_id: str) -> Dict[str, Any]:
+        text_parts: List[str] = []
+        all_images: List[Dict[str, Any]] = []
+        all_tool_results: List[Dict[str, Any]] = []
+
+        for msg in messages:
+            text, images, tool_results = cls._process_user_content(getattr(msg, "content", None))
+            if isinstance(text, str) and text:
+                text_parts.append(text)
+            if images:
+                all_images.extend(images)
+            if tool_results:
+                all_tool_results.extend(tool_results)
+
+        ctx: Dict[str, Any] = {}
+        if all_tool_results:
+            ctx["toolResults"] = all_tool_results
+
+        return {
+            "userInputMessage": {
+                "userInputMessageContext": ctx,
+                "content": "\n".join([p for p in text_parts if p]).strip(),
+                "modelId": model_id,
+                "images": all_images,
+                "origin": "AI_EDITOR",
+            }
+        }
+
+    @classmethod
+    def _build_history_from_messages(cls, messages: List[Any], model_id: str) -> List[Dict[str, Any]]:
+        """
+        对齐 kiro.rs 的 history 构建：
+        - 合并连续 user 消息为一个 HistoryUserMessage
+        - 仅在 user->assistant 成对时才写入 assistant
+        - 结尾若为孤立 user，则自动补一个 "OK" assistant
+        """
+        out: List[Dict[str, Any]] = []
+        user_buffer: List[Any] = []
+
+        for msg in messages:
+            role = str(getattr(msg, "role", "") or "").strip().lower()
+            if role == "user":
+                user_buffer.append(msg)
+                continue
+
+            if role == "assistant":
+                if not user_buffer:
+                    # 对齐 kiro.rs：没有对应 user 的 assistant 直接跳过，避免破坏成对结构。
+                    continue
+                out.append(cls._merge_user_messages(user_buffer, model_id))
+                user_buffer = []
+                out.append(cls._convert_assistant_history_message(msg))
+                continue
+
+        if user_buffer:
+            out.append(cls._merge_user_messages(user_buffer, model_id))
+            out.append({"assistantResponseMessage": {"content": "OK"}})
+
+        return out
+
+    @classmethod
     def _convert_assistant_history_message(cls, msg: Any) -> Dict[str, Any]:
         content = getattr(msg, "content", None)
         tool_uses: List[Dict[str, Any]] = []
@@ -553,7 +665,8 @@ class KiroAnthropicConverter:
         if thinking:
             final_content = f"<thinking>{thinking}</thinking>" + (f"\n\n{text}" if text else "")
         elif not text and tool_uses:
-            final_content = "There is a tool use."
+            # 对齐 kiro.rs：当只有 tool_use 时，content 需要非空；用一个最小占位符即可。
+            final_content = " "
         else:
             final_content = text
 
