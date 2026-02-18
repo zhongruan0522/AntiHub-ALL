@@ -17,10 +17,12 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app /app/app
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh && \
+    ln -sf /usr/local/bin/entrypoint.sh /entrypoint.sh
 
 USER appuser
 
 EXPOSE 8045
 
-CMD ["entrypoint.sh"]
+CMD ["/usr/local/bin/entrypoint.sh"]
