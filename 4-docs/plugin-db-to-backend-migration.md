@@ -58,3 +58,4 @@ docker compose -f docker-compose.yml -f docker/docker-compose.plugin-env.yml up 
 ## 4) 常见问题
 
 - 如果 backend 报 “mapping missing”：说明 plugin DB 里存在 `accounts.user_id` 在 backend 侧找不到对应用户映射，需要先补齐（通常来自 `plugin_api_keys.plugin_user_id` 或 api_key 匹配）。
+- 如果 backend 在启动期迁移时报 `sqlalchemy.exc.InvalidRequestError: A transaction is already begun on this Session.`：通常是 SQLAlchemy 2.x 的 autobegin 导致同一个 Session 上出现“隐式事务未结束 + 之后又进入 `async with db.begin()`”的冲突；解决：更新到包含该修复的 backend 版本/镜像；临时绕过：先清空 `.env` 里的 `PLUGIN_API_BASE_URL` 跳过迁移逻辑以先启动。

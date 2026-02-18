@@ -173,12 +173,19 @@ async def ensure_plugin_db_migrated(db: AsyncSession) -> None:
 
 
 async def _get_migration_state(db: AsyncSession) -> Optional[PluginDbMigrationState]:
-    result = await db.execute(
+    stmt = (
         select(PluginDbMigrationState)
         .where(PluginDbMigrationState.key == _MIGRATION_KEY)
         .execution_options(populate_existing=True)
     )
-    return result.scalar_one_or_none()
+
+    if db.in_transaction():
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async with db.begin():
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
 
 
 async def _try_claim_migration(*, db: AsyncSession, now: datetime, instance_id: str) -> bool:
