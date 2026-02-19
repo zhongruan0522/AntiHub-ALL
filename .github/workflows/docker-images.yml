@@ -370,6 +370,10 @@ jobs:
 
   merge-web:
     needs: [changes, build-web]
+    # NOTE: build-web depends on both `collect-antihook-assets` and `reuse-antihook-assets`.
+    # When AntiHook changes, `reuse-antihook-assets` is intentionally skipped. Without `always()`,
+    # downstream jobs can be skipped even if build-web itself succeeded.
+    if: ${{ always() && needs['build-web'].result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
