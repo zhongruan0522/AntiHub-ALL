@@ -1,33 +1,20 @@
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
+node_modules/
+dist/
+build/
+.turbo/
+.npm-cache/
 
-*.test
+# Tauri/Rust
+src-tauri/target/
+src-tauri/gen/
 
-/bin/
-/dist/
-/build/
-
-# 构建产物
-antihook
-antihook-*
-*.app
-
-logs/
-*.log
-
-go.work
-
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
+# OS
 .DS_Store
 Thumbs.db
-
-# 构建配置（包含敏感信息）
-.build.config

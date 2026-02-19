@@ -1,10 +1,16 @@
-name: Build & Push Docker Images
+name: Build & Push Images + AntiHook Assets
 
 on:
   push:
     branches: [main, Beta]
     tags: ["v*", "V*"]
   workflow_dispatch:
+    inputs:
+      force_antihook_assets:
+        description: "Force rebuild AntiHook desktop assets"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: docker-images-${{ github.workflow }}-${{ github.ref }}
@@ -19,6 +25,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       web: ${{ steps.normalize.outputs.web }}
+      antihook: ${{ steps.normalize.outputs.antihook }}
       backend: ${{ steps.normalize.outputs.backend }}
       plugin_env: ${{ steps.normalize.outputs.plugin_env }}
       tag_name: ${{ steps.tag.outputs.tag_name }}
@@ -31,6 +38,16 @@ jobs:
           echo "web=true" >> $GITHUB_OUTPUT
           echo "backend=true" >> $GITHUB_OUTPUT
           echo "plugin_env=true" >> $GITHUB_OUTPUT
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${{ inputs.force_antihook_assets }}" == "true" ]]; then
+              echo "antihook=true" >> $GITHUB_OUTPUT
+            else
+              echo "antihook=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "antihook=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Checkout
         if: steps.force.outputs.force_all != 'true'
@@ -49,6 +66,7 @@ jobs:
             web:
               - 'AntiHub/**'
               - '!AntiHub/**/*.md'
+            antihook:
               - 'AntiHook/**'
               - '!AntiHook/**/*.md'
             backend:
@@ -64,10 +82,18 @@ jobs:
           # force 有值时使用 force 输出；否则使用 filter 输出（空则转为 false）
           if [ "${{ steps.force.outputs.web }}" = "true" ]; then
             echo "web=true" >> $GITHUB_OUTPUT
-          elif [ "${{ steps.filter.outputs.web }}" = "true" ]; then
+          elif [ "${{ steps.filter.outputs.web }}" = "true" ] || [ "${{ steps.filter.outputs.antihook }}" = "true" ]; then
             echo "web=true" >> $GITHUB_OUTPUT
           else
             echo "web=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "${{ steps.force.outputs.antihook }}" = "true" ]; then
+            echo "antihook=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.filter.outputs.antihook }}" = "true" ]; then
+            echo "antihook=true" >> $GITHUB_OUTPUT
+          else
+            echo "antihook=false" >> $GITHUB_OUTPUT
           fi
 
           if [ "${{ steps.force.outputs.backend }}" = "true" ]; then
@@ -94,10 +120,201 @@ jobs:
           LOWER_TAG=$(echo "$TAG_NAME" | tr '[:upper:]' '[:lower:]')
           echo "tag_name=$LOWER_TAG" >> $GITHUB_OUTPUT
 
+  # ============ AntiHook (Desktop Assets for Web Download) ============
+  build-antihook-assets:
+    needs: changes
+    if: needs.changes.outputs.antihook == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            artifact_name: antihook-assets-windows-amd64
+            output_name: antihook-windows-amd64.exe
+            tauri_args: ""
+          - runner: macos-latest
+            artifact_name: antihook-assets-darwin-universal
+            output_name: antihook-darwin-universal.dmg
+            tauri_args: "--target universal-apple-darwin"
+          - runner: ubuntu-latest
+            artifact_name: antihook-assets-linux-amd64
+            output_name: antihook-linux-amd64.AppImage
+            tauri_args: ""
+          - runner: ubuntu-24.04-arm
+            artifact_name: antihook-assets-linux-arm64
+            output_name: antihook-linux-arm64.AppImage
+            tauri_args: ""
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: startsWith(matrix.runner, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            javascriptcoregtk-4.1 \
+            libjavascriptcoregtk-4.1-dev \
+            libgtk-3-dev \
+            libnm-dev \
+            pkg-config \
+            patchelf \
+            xdg-utils
+
+      - name: Rust setup
+        if: "!contains(matrix.tauri_args, 'universal-apple-darwin')"
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust setup (macOS universal)
+        if: contains(matrix.tauri_args, 'universal-apple-darwin')
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: AntiHook
+        run: npm install --no-audit --no-fund
+
+      - name: Build Tauri app
+        working-directory: AntiHook
+        run: npm run tauri build -- ${{ matrix.tauri_args }}
+
+      - name: Collect bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+
+          if [[ "${{ matrix.output_name }}" == *.exe ]]; then
+            src="$(find AntiHook/src-tauri/target -type f -path '*release/bundle/nsis/*.exe' ! -name '*.sig' | head -n 1)"
+          elif [[ "${{ matrix.output_name }}" == *.dmg ]]; then
+            src="$(find AntiHook/src-tauri/target -type f -path '*release/bundle/dmg/*.dmg' | head -n 1)"
+          elif [[ "${{ matrix.output_name }}" == *.AppImage ]]; then
+            src="$(find AntiHook/src-tauri/target -type f -path '*release/bundle/appimage/*.AppImage' | head -n 1)"
+          else
+            echo "Unsupported output_name: ${{ matrix.output_name }}"
+            exit 1
+          fi
+
+          if [[ -z "$src" || ! -f "$src" ]]; then
+            echo "Bundle not found for ${{ matrix.output_name }}"
+            find AntiHook/src-tauri/target -maxdepth 6 -type d -print || true
+            exit 1
+          fi
+
+          cp "$src" "out/${{ matrix.output_name }}"
+          ls -la out
+
+      - name: Upload assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          if-no-files-found: error
+          path: out/${{ matrix.output_name }}
+
+  collect-antihook-assets:
+    needs: build-antihook-assets
+    if: needs.build-antihook-assets.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download all AntiHook asset artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: antihook-assets-*
+          merge-multiple: true
+          path: antihook-assets
+
+      - name: Upload merged AntiHook assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: antihook-web-assets
+          if-no-files-found: error
+          path: antihook-assets/*
+
+  reuse-antihook-assets:
+    needs: changes
+    if: needs.changes.outputs.web == 'true' && needs.changes.outputs.antihook != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download previous AntiHook assets artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          repo="${GITHUB_REPOSITORY}"
+          workflow_file="docker-images.yml"
+          branch="${GITHUB_REF_NAME}"
+          current_run_id="${GITHUB_RUN_ID}"
+
+          echo "Searching previous successful runs for artifact: antihook-web-assets"
+          echo "repo=$repo workflow=$workflow_file branch=$branch current_run_id=$current_run_id"
+
+          run_ids="$(gh api "repos/${repo}/actions/workflows/${workflow_file}/runs?branch=${branch}&status=success&per_page=30" --jq '.workflow_runs[].id')"
+
+          for run_id in ${run_ids}; do
+            if [[ "${run_id}" == "${current_run_id}" ]]; then
+              continue
+            fi
+
+            echo "Checking run: ${run_id}"
+            archive_url="$(gh api "repos/${repo}/actions/runs/${run_id}/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.name=="antihook-web-assets") | .archive_download_url' | head -n 1 || true)"
+
+            if [[ -z "${archive_url}" ]]; then
+              continue
+            fi
+
+            echo "Found artifact archive URL in run ${run_id}"
+            curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+              -L "${archive_url}" -o antihook-web-assets.zip
+
+            rm -rf antihook-assets
+            mkdir -p antihook-assets
+            unzip -q antihook-web-assets.zip -d antihook-assets
+
+            echo "Downloaded assets:"
+            ls -la antihook-assets
+            exit 0
+          done
+
+          echo "ERROR: Could not find any previous 'antihook-web-assets' artifact to reuse." >&2
+          echo "Hint: run workflow_dispatch once, or push a tag, or change AntiHook/ to trigger a fresh build." >&2
+          exit 1
+
+      - name: Upload reused AntiHook assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: antihook-web-assets
+          if-no-files-found: error
+          path: antihook-assets/*
+
   # ============ Web ============
   build-web:
-    needs: changes
-    if: needs.changes.outputs.web == 'true' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+    needs: [changes, collect-antihook-assets, reuse-antihook-assets]
+    if: always() && needs.changes.outputs.web == 'true' && (needs.collect-antihook-assets.result == 'success' || needs.reuse-antihook-assets.result == 'success')
     strategy:
       fail-fast: false
       matrix:
@@ -116,6 +333,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download AntiHook assets (for web downloads)
+        uses: actions/download-artifact@v4
+        with:
+          name: antihook-web-assets
+          path: antihook-assets
+
+      - name: Copy AntiHook assets into web public folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p AntiHub/public/antihook
+          cp -f antihook-assets/* AntiHub/public/antihook/
+          ls -la AntiHub/public/antihook
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -131,8 +362,6 @@ jobs:
         with:
           context: ./AntiHub
           file: ./AntiHub/Dockerfile
-          build-contexts: |
-            antihook=./AntiHook
           push: true
           platforms: ${{ matrix.platform }}
           tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/antihub-web:build-${{ github.run_id }}-${{ matrix.suffix }}

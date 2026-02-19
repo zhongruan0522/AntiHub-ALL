@@ -6,7 +6,7 @@ This repository is a Docker Compose monorepo that ships a working AntiHub stack:
 
 - `AntiHub/` — Next.js (TypeScript) web UI
 - `AntiHub-Backend/` — FastAPI backend (Python, Alembic migrations)
-- `AntiHook/` — Go utilities/binaries
+- `AntiHook/` — Tauri v2 desktop GUI (Rust + React/Vite)
 - `docker/` — Compose helpers (e.g. DB init scripts)
 - `4-docs/` — This folder contains some project documents. Please check after each implementation to see if any documents need to be updated. 
 
@@ -31,7 +31,7 @@ Module development (run inside each folder):
 
 - Web: `cd AntiHub && pnpm install && pnpm dev` (lint: `pnpm lint`, build: `pnpm build`)
 - Backend: `cd AntiHub-Backend && uv sync && uv run uvicorn app.main:app --reload`
-- Go: `cd AntiHook && go test ./... && go build ./...`
+- Desktop (AntiHook): `cd AntiHook && npm install && npm run tauri dev` (frontend-only build: `npm run build`)
 
 **AntiHub 对接备注：**
 
@@ -45,9 +45,9 @@ Module development (run inside each folder):
 - Keep changes scoped to the module you touch; follow existing patterns in that folder.
 - TypeScript: React components in `PascalCase`, variables/functions in `camelCase`; run `pnpm lint`.
 - Python: 4-space indentation; keep async routes non-blocking; migrations live in `AntiHub-Backend/alembic/`.
-- Go: run `gofmt` on modified files.
+- Rust: run `cargo fmt` on modified files (AntiHook `src-tauri/`).
 
-Generated artifacts should not be committed (see each module’s `.gitignore`): `.next/`, `node_modules/`, `.venv/`, `__pycache__/`, and binaries in `AntiHook/`.
+Generated artifacts should not be committed (see each module’s `.gitignore`): `.next/`, `node_modules/`, `.venv/`, `__pycache__/`, and `AntiHook/src-tauri/target/`.
 
 ## Testing Guidelines
 

@@ -1,68 +1,42 @@
-# AntiHook
+# AntiHook (GUI)
 
-<!--
-AntiHook requires explicit configuration (no built-in defaults).
-Run `antihook --config` once to set KIRO_SERVER_URL.
--->
+AntiHook 现在是一个 **Tauri v2 + React + Vite** 的桌面配置工具，用于给用户部署的 AntiHub-ALL 填写 `KIRO_SERVER_URL`，并一键检测服务是否可用（请求 `GET /api/health`）。
 
-## 构建
+> 旧版 Go CLI 实现已被归档到 `2-参考项目/AntiHook-legacy/`，便于后续参考/恢复逻辑。
 
-```bash
-# macOS
-./build.sh darwin
+## 功能（当前版本）
 
-# Windows
-./build.sh windows
+- 配置 `KIRO_SERVER_URL`（自动规范化：去掉末尾 `/`，只允许 `http/https`）
+- 保存到本机配置文件：`~/.config/antihook/config.json`
+- 检测服务连通性：`GET {KIRO_SERVER_URL}/api/health`
 
-# Linux
-./build.sh linux
-```
+## 开发 & 构建
 
-## 开发
+### 前置依赖
 
-### 依赖安装
+- Node.js 18+（建议 20+）
+- Rust 工具链（Tauri v2）
+- Windows 需要 WebView2 Runtime（通常系统已自带或可安装）
+
+### 开发模式
 
 ```bash
-go mod download
+cd AntiHook
+npm install
+npm run tauri dev
 ```
 
-### 编译
+### 打包桌面应用（生成安装包/可执行文件）
 
 ```bash
-go build -o antihook .
+cd AntiHook
+npm install
+npm run tauri build
 ```
 
-## 使用
-
-对于 macOS，使用前请先安装 duti：
+### 仅构建前端（不打包桌面）
 
 ```bash
-brew install duti
+cd AntiHook
+npm run build
 ```
-
-对于 Windows，请运行 AntiHook 至少一次。
-
-如果要移除 Hook，请运行：
-
-```bash
-antihook --recover
-```
-
-## 配置
-
-首次运行（直接运行 `antihook`，且终端可交互）会提示你输入 `KIRO_SERVER_URL`（没有内置默认值，必须输入），并把配置写入用户目录下的 `config.json`；也可以选择写入用户环境变量。
-
-优先级：环境变量 > 配置文件（未配置会提示你先配置）。
-
-手动重新配置：
-
-```bash
-antihook --config
-```
-
-查看配置文件路径：
-
-```bash
-antihook --print-config-path
-```
-

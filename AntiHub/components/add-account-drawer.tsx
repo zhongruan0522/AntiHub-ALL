@@ -76,7 +76,6 @@ const ANTIHOOK_DOWNLOAD_OPTIONS: Array<{
   arch: AntiHookArch;
 }> = [
   { label: 'Windows x64', os: 'windows', arch: 'amd64' },
-  { label: 'Windows ARM64', os: 'windows', arch: 'arm64' },
   { label: 'macOS Intel', os: 'darwin', arch: 'amd64' },
   { label: 'macOS Apple Silicon', os: 'darwin', arch: 'arm64' },
   { label: 'Linux x64', os: 'linux', arch: 'amd64' },
@@ -84,8 +83,9 @@ const ANTIHOOK_DOWNLOAD_OPTIONS: Array<{
 ];
 
 const getAntiHookAssetName = (os: AntiHookOS, arch: AntiHookArch) => {
-  const ext = os === 'windows' ? '.exe' : '';
-  return `antihook-${os}-${arch}${ext}`;
+  if (os === 'windows') return `antihook-windows-${arch}.exe`;
+  if (os === 'darwin') return 'antihook-darwin-universal.dmg';
+  return `antihook-linux-${arch}.AppImage`;
 };
 
 export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDrawerProps) {

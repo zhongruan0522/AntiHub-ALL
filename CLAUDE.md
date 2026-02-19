@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 AntiHub-ALL 是一个 Docker Compose 单体仓库，整合了 AntiHub 全栈服务：
 - **AntiHub/** — Next.js 16 前端 (TypeScript, React 19, Tailwind CSS 4)
 - **AntiHub-Backend/** — FastAPI 后端 (Python 3.10+, SQLAlchemy 2.0, Alembic)
-- **AntiHook/** — Go 工具程序
+- **AntiHook/** — Tauri v2 桌面配置工具 (Rust + React/Vite)
 - **4-docs/** — This folder contains some project documents. Please check after each implementation to see if any documents need to be updated. 
 
 ## 常用命令
@@ -48,11 +48,10 @@ uv run alembic revision --autogenerate -m "描述"
 uv run alembic downgrade -1
 ```
 
-**Go 工具 (AntiHook/)**
+**桌面端 (AntiHook/)**
 ```bash
-cd AntiHook
-go test ./...
-go build ./...
+cd AntiHook && npm install
+npm run tauri dev
 ```
 
 ## 架构说明
@@ -93,7 +92,7 @@ app/
 
 - **TypeScript**: 组件用 PascalCase，变量/函数用 camelCase；运行 `pnpm lint` 检查
 - **Python**: 4 空格缩进，异步路由保持非阻塞，类型注解
-- **Go**: 运行 `gofmt` 格式化
+- **Rust**: 运行 `cargo fmt` 格式化（AntiHook `src-tauri/`）
 - **提交信息**: `<type>: <summary>`（feat:, fix:, !表示破坏性变更）
 - **模块独立性**: 保持改动范围在所修改的模块内，遵循该文件夹的现有模式
 
@@ -104,7 +103,7 @@ app/
 - `node_modules/` — npm 依赖
 - `.venv/` — Python 虚拟环境
 - `__pycache__/` — Python 缓存
-- `AntiHook/` 中的二进制文件
+- `AntiHook/src-tauri/target/` — Rust 构建输出
 
 ## 环境变量
 

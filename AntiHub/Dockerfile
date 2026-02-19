@@ -1,28 +1,6 @@
 # syntax=docker/dockerfile:1.6
 
 # ============================================
-# AntiHook Stage - build binaries for web embed
-# ============================================
-FROM golang:1.21-alpine AS antihook-builder
-
-WORKDIR /src
-
-RUN apk add --no-cache ca-certificates
-
-COPY --from=antihook go.mod go.sum ./
-RUN go mod download
-
-COPY --from=antihook . .
-
-RUN mkdir -p /out && \
-    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/antihook-windows-amd64.exe . && \
-    CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/antihook-windows-arm64.exe . && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/antihook-darwin-amd64 . && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/antihook-darwin-arm64 . && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/antihook-linux-amd64 . && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/antihook-linux-arm64 .
-
-# ============================================
 # Build Stage - 安装依赖并构建应用
 # ============================================
 FROM node:20-alpine AS builder
@@ -40,10 +18,6 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 # 复制源代码
 COPY . .
-
-# 构建应用
-# Embed AntiHook binaries into web public assets.
-COPY --from=antihook-builder /out/ ./public/antihook/
 
 RUN pnpm build
 
