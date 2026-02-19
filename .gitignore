@@ -12,3 +12,4 @@ GeminiCLI_对接复现指南.md
 .pytest_cache/
 .uv-cache/
 临时-*/
+.docker-config/
