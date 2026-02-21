@@ -9,6 +9,7 @@ from app.api.routes.v1 import router as v1_router
 from app.api.routes.usage import router as usage_router
 from app.api.routes.kiro import router as kiro_router
 from app.api.routes.kiro_aws_idc import router as kiro_aws_idc_router
+from app.api.routes.kiro_enterprise import router as kiro_enterprise_router
 from app.api.routes.qwen import router as qwen_router
 from app.api.routes.anthropic import router as anthropic_router
 from app.api.routes.anthropic import cc_router as anthropic_cc_router
@@ -28,6 +29,7 @@ __all__ = [
     "usage_router",
     "kiro_router",
     "kiro_aws_idc_router",
+    "kiro_enterprise_router",
     "qwen_router",
     "anthropic_router",
     "anthropic_cc_router",

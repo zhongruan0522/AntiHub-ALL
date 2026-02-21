@@ -189,7 +189,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: AntiHook
-        run: npm install --no-audit --no-fund
+        run: npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Build Tauri app
         working-directory: AntiHook

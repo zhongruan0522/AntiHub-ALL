@@ -13,3 +13,4 @@ GeminiCLI_对接复现指南.md
 .uv-cache/
 临时-*/
 .docker-config/
+.vscode/

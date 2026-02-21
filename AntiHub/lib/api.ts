@@ -2068,6 +2068,63 @@ export async function importKiroAwsIdcAccount(payload: {
   return result.data;
 }
 
+/**
+ * 导入 Kiro 企业账户（Enterprise）
+ */
+export async function importKiroEnterpriseAccount(payload: {
+  refreshToken: string;
+  clientId: string;
+  clientSecret: string;
+  region?: string;
+  authRegion?: string;
+  apiRegion?: string;
+  accountName?: string;
+  isShared?: number;
+}): Promise<KiroAccount> {
+  const result = await fetchWithAuth<{ success: boolean; data: KiroAccount }>(
+    `${API_BASE_URL}/api/kiro/enterprise/import`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        refresh_token: payload.refreshToken,
+        client_id: payload.clientId,
+        client_secret: payload.clientSecret,
+        region: payload.region ?? 'us-east-1',
+        auth_region: payload.authRegion,
+        api_region: payload.apiRegion,
+        account_name: payload.accountName,
+        is_shared: payload.isShared ?? 0,
+      }),
+    }
+  );
+  return result.data;
+}
+
+/**
+ * 批量导入 Kiro 企业账户（Enterprise）
+ */
+export async function batchImportKiroEnterpriseAccounts(payload: {
+  accounts: Array<Record<string, any>>;
+  region?: string;
+  authRegion?: string;
+  apiRegion?: string;
+  isShared?: number;
+}): Promise<{ results: Array<{ index: number; success: boolean; data?: KiroAccount; error?: string }> }> {
+  return fetchWithAuth<{ results: Array<{ index: number; success: boolean; data?: KiroAccount; error?: string }> }>(
+    `${API_BASE_URL}/api/kiro/enterprise/batch-import`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        accounts: payload.accounts,
+        region: payload.region ?? 'us-east-1',
+        auth_region: payload.authRegion,
+        api_region: payload.apiRegion,
+        is_shared: payload.isShared ?? 0,
+      }),
+    }
+  );
+}
+
 // ==================== Qwen 账号管理相关 API ====================
 
 /**

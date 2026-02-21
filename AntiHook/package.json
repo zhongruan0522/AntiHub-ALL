@@ -10,7 +10,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@lobehub/fluent-emoji": "^4.1.0",
+    "@lobehub/icons": "^4.6.0",
+    "@lobehub/ui": "^4.38.4",
     "@tauri-apps/api": "^2.0.0",
+    "antd": "^6.3.0",
+    "es-toolkit": "^1.44.0",
+    "lucide-react": "^0.575.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

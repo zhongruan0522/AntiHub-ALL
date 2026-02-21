@@ -31,6 +31,7 @@ from app.api.routes import (
     settings_router,
     kiro_router,
     kiro_aws_idc_router,
+    kiro_enterprise_router,
     qwen_router,
     anthropic_router,
     anthropic_cc_router,
@@ -287,6 +288,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_router)  # 用户设置（默认渠道等）
     app.include_router(kiro_router)  # Kiro账号管理API
     app.include_router(kiro_aws_idc_router)  # Kiro AWS IdC / Builder ID（独立入口）
+    app.include_router(kiro_enterprise_router)  # Kiro 企业账户导入（Enterprise Account）
     app.include_router(qwen_router)  # Qwen账号管理API
     app.include_router(codex_router)  # Codex账号管理API（本地落库）
     app.include_router(gemini_cli_router)  # GeminiCLI账号管理API（本地落库）

@@ -48,6 +48,7 @@ class KiroAnthropicConverter:
     # 与 `AntiHub-plugin/src/services/kiro.service.js` 的 KIRO_MODEL_MAP 保持一致（优先精确映射）
     MODEL_MAP: Dict[str, str] = {
         "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+        "claude-sonnet-4-6": "claude-sonnet-4.6",
         "claude-sonnet-4-20250514": "claude-sonnet-4",
         "claude-opus-4-5-20251101": "claude-opus-4.5",
         # Compat: accept both 4.6 and 4-6 spellings (always emit claude-opus-4.6)
@@ -297,6 +298,8 @@ class KiroAnthropicConverter:
 
         lower = m.lower()
         if "sonnet" in lower:
+            if "4-6" in lower or "4.6" in lower:
+                return "claude-sonnet-4.6"
             return "claude-sonnet-4.5"
         if "opus" in lower:
             # 对齐 kiro.rs：非显式 4.5 的 opus 统一视为 4.6

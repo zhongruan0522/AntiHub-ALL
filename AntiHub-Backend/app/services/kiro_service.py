@@ -38,6 +38,7 @@ from app.services.kiro_anthropic_converter import (
     WRITE_TOOL_DESCRIPTION_SUFFIX,
     KiroAnthropicConverter,
 )
+from app.utils.model_normalization import normalize_claude_model_id
 from app.utils.aws_eventstream import AwsEventStreamDecoder, AwsEventStreamParseError
 from app.utils.encryption import decrypt_api_key, encrypt_api_key
 
@@ -206,6 +207,7 @@ class KiroService:
     SUPPORTED_MODELS = [
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-6",
         "claude-sonnet-4-20250514",
         "claude-opus-4-5-20251101",
         "claude-opus-4-6",
@@ -557,16 +559,18 @@ class KiroService:
     async def create_account(self, user_id: int, account_data: Dict[str, Any]) -> Dict[str, Any]:
         """创建/导入 Kiro 账号（Refresh Token）。
 
-        注意：当前实现仅做“落库 + 返回”，不主动请求上游刷新 usage limits。
+        注意：该接口会在创建时尝试请求上游 getUsageLimits（包含 email/subscription），用于校验凭据有效性；
+        如果上游返回 401/403，会直接失败并不会落库。
         """
         refresh_token = _trimmed_str(account_data.get("refresh_token") or account_data.get("refreshToken"))
         if not refresh_token:
             raise UpstreamAPIError(status_code=400, message="missing refresh_token")
 
         auth_method = _trimmed_str(account_data.get("auth_method") or account_data.get("authMethod") or "Social")
-        if auth_method.lower() == "social":
+        auth_method_lower = auth_method.lower()
+        if auth_method_lower == "social":
             auth_method = "Social"
-        elif auth_method.lower() == "idc":
+        elif auth_method_lower in ("idc", "iam", "ima", "builder-id", "builderid", "aws-ima"):
             auth_method = "IdC"
         if auth_method not in ("Social", "IdC"):
             raise UpstreamAPIError(status_code=400, message="auth_method must be Social or IdC")
@@ -579,6 +583,13 @@ class KiroService:
         account_name = _trimmed_str(account_data.get("account_name") or account_data.get("accountName")) or "Kiro Account"
         machineid = _trimmed_str(account_data.get("machineid") or account_data.get("machineId")) or None
         region = _trimmed_str(account_data.get("region")) or "us-east-1"
+        auth_region = _trimmed_str(account_data.get("auth_region") or account_data.get("authRegion")) or None
+        api_region = _trimmed_str(account_data.get("api_region") or account_data.get("apiRegion")) or None
+        if auth_method == "IdC" and not api_region:
+            # Kiro/Amazon Q Developer API region is typically us-east-1 even when SSO/OIDC auth region differs.
+            api_region = "us-east-1"
+        if auth_method == "IdC" and not auth_region:
+            auth_region = region
         userid = (
             _trimmed_str(account_data.get("userid") or account_data.get("userId") or account_data.get("user_id"))
             or None
@@ -604,6 +615,8 @@ class KiroService:
         if isinstance(expires_in_raw, (int, float)) and int(expires_in_raw) > 0:
             expires_in = int(expires_in_raw)
 
+        provider = _trimmed_str(account_data.get("provider")) or None
+
         credentials_payload = {
             "type": "kiro",
             "refresh_token": refresh_token,
@@ -613,12 +626,16 @@ class KiroService:
             "profile_arn": account_data.get("profile_arn") or account_data.get("profileArn"),
             "machineid": machineid,
             "region": region,
+            "auth_region": auth_region,
+            "api_region": api_region,
             "auth_method": auth_method,
             "userid": userid,
             "email": email,
             "subscription": subscription,
             "subscription_type": subscription_type,
         }
+        if provider:
+            credentials_payload["provider"] = provider
         if expires_in is not None:
             credentials_payload["expires_in"] = expires_in
         encrypted_credentials = encrypt_api_key(json.dumps(credentials_payload, ensure_ascii=False))
@@ -641,6 +658,27 @@ class KiroService:
         )
         if expires_in is not None and (account_data.get("access_token") or account_data.get("accessToken")):
             account.token_expires_at = _now_utc() + timedelta(seconds=expires_in)
+
+        # Validate credentials before persisting.
+        # If upstream rejects the token (401/403), do NOT insert into DB.
+        try:
+            await self._refresh_account_usage_limits_from_upstream(account)
+        except UpstreamAPIError:
+            raise
+        except ValueError as e:
+            # Token refresh helpers currently raise ValueError; normalize to UpstreamAPIError
+            # so the API layer can surface a consistent {error, type} payload.
+            msg = str(e or "").strip() or "token validation failed"
+            status_code = 400
+            m = re.search(r"HTTP\s+(\d{3})", msg)
+            if m:
+                try:
+                    candidate = int(m.group(1))
+                    if 400 <= candidate <= 599:
+                        status_code = candidate
+                except Exception:
+                    status_code = 400
+            raise UpstreamAPIError(status_code=status_code, message=msg)
 
         self.db.add(account)
         await self.db.flush()
@@ -684,6 +722,8 @@ class KiroService:
             "profile_arn": creds.get("profile_arn"),
             "machineid": account.machineid or creds.get("machineid"),
             "region": account.region or creds.get("region"),
+            "auth_region": creds.get("auth_region") or creds.get("authRegion"),
+            "api_region": creds.get("api_region") or creds.get("apiRegion"),
             "auth_method": account.auth_method or creds.get("auth_method"),
             "expires_at": _to_ms(account.token_expires_at),
             "userid": account.userid,
@@ -824,6 +864,13 @@ class KiroService:
             if subscription_type:
                 account.subscription_type = subscription_type
 
+            # Enterprise subscription auto-detection: if subscription title or
+            # type contains "POWER" or "ENTERPRISE", mark as Enterprise.
+            _sub_upper = (account.subscription or "").upper()
+            _type_upper = (account.subscription_type or "").upper()
+            if "POWER" in _sub_upper or "ENTERPRISE" in _sub_upper or "POWER" in _type_upper or "ENTERPRISE" in _type_upper:
+                account.subscription_type = "Enterprise"
+
         breakdown_list = payload.get("usageBreakdownList") or payload.get("usage_breakdown_list") or []
         breakdown = self._pick_usage_breakdown(breakdown_list) or {}
 
@@ -954,7 +1001,7 @@ class KiroService:
 
     async def _refresh_account_usage_limits_from_upstream(self, account: KiroAccount) -> Dict[str, Any]:
         creds = self._load_account_credentials(account)
-        region = self._coerce_region(account.region or creds.get("region"))
+        api_region = self._effective_api_region(account=account, creds=creds)
         machineid = _trimmed_str(account.machineid or creds.get("machineid")) or secrets.token_hex(32)
         account.machineid = machineid
 
@@ -979,7 +1026,7 @@ class KiroService:
 
             best_error: Optional[UpstreamAPIError] = None
 
-            for base_url in self._kiro_api_base_urls(region):
+            for base_url in self._kiro_api_base_urls(api_region):
                 url = f"{base_url.rstrip('/')}/getUsageLimits"
                 host = httpx.URL(url).host
                 headers = dict(headers_template)
@@ -1259,6 +1306,39 @@ class KiroService:
         if isinstance(value, str) and value.strip():
             return value.strip()
         return "us-east-1"
+
+    @classmethod
+    def _effective_auth_region(cls, *, account: KiroAccount, creds: Dict[str, Any]) -> str:
+        """
+        Region used for auth/token refresh endpoints (OIDC / desktop auth).
+
+        Backward compatible with old rows that only store `region`.
+        """
+
+        value = _trimmed_str(creds.get("auth_region") or creds.get("authRegion"))
+        if value:
+            return cls._coerce_region(value)
+        return cls._coerce_region(account.region or creds.get("region"))
+
+    @classmethod
+    def _effective_api_region(cls, *, account: KiroAccount, creds: Dict[str, Any]) -> str:
+        """
+        Region used for API endpoints (q.* / codewhisperer.*).
+
+        Note: For IdC (AWS IAM Identity Center / Builder ID) accounts, the SSO/OIDC auth region can differ
+        from the API region. When `api_region` is not provided, default to `us-east-1` for IdC accounts
+        (aligns with kiro-account-manager / kiro.rs behavior).
+        """
+
+        value = _trimmed_str(creds.get("api_region") or creds.get("apiRegion"))
+        if value:
+            return cls._coerce_region(value)
+
+        auth_method = _trimmed_str(account.auth_method or creds.get("auth_method") or creds.get("authMethod"))
+        if auth_method and auth_method.lower() in ("idc", "iam", "ima", "builder-id", "builderid", "aws-ima"):
+            return "us-east-1"
+
+        return cls._coerce_region(account.region or creds.get("region"))
 
     @staticmethod
     def _extract_openai_text_content(content: Any) -> str:
@@ -1573,6 +1653,37 @@ class KiroService:
 
         return conversation_state
 
+    @staticmethod
+    def _normalize_conversation_state_models(state: Any) -> None:
+        """
+        Best-effort normalization for client-supplied conversationState.
+
+        Some clients forward `conversationState` directly (instead of OpenAI `messages`)
+        and may use dash-version Claude ids like `claude-sonnet-4-6`. Upstream Kiro is
+        strict and expects dot-version ids (align `2-参考项目/kiro.rs` mapping).
+        """
+        if not isinstance(state, dict):
+            return
+
+        def _normalize_user_input_message(uim: Any) -> None:
+            if not isinstance(uim, dict):
+                return
+            for key in ("modelId", "model_id"):
+                val = uim.get(key)
+                if isinstance(val, str) and val.strip():
+                    uim[key] = normalize_claude_model_id(val)
+
+        current = state.get("currentMessage") or state.get("current_message")
+        if isinstance(current, dict):
+            _normalize_user_input_message(current.get("userInputMessage") or current.get("user_input_message"))
+
+        history = state.get("history")
+        if isinstance(history, list):
+            for item in history:
+                if not isinstance(item, dict):
+                    continue
+                _normalize_user_input_message(item.get("userInputMessage") or item.get("user_input_message"))
+
     async def _list_available_chat_accounts(self, *, user_id: int, exclude: set[str]) -> List[KiroAccount]:
         stmt = select(KiroAccount).where(KiroAccount.status == 1)
         stmt = stmt.where(
@@ -1596,7 +1707,7 @@ class KiroService:
         expired = account.token_expires_at is None or account.token_expires_at <= (now + timedelta(seconds=30))
         if account.need_refresh or not access_token or expired:
             auth_method = _trimmed_str(account.auth_method or creds.get("auth_method") or creds.get("authMethod") or "Social")
-            region = self._coerce_region(account.region or creds.get("region"))
+            auth_region = self._effective_auth_region(account=account, creds=creds)
             refresh_token = _trimmed_str(creds.get("refresh_token") or creds.get("refreshToken"))
             if not refresh_token:
                 raise ValueError("Kiro account missing refresh_token")
@@ -1617,10 +1728,10 @@ class KiroService:
                 if not client_id or not client_secret:
                     raise ValueError("IdC account requires client_id and client_secret")
 
-                url = f"https://oidc.{region}.amazonaws.com/token"
+                url = f"https://oidc.{auth_region}.amazonaws.com/token"
                 headers = {
                     "Content-Type": "application/json",
-                    "Host": f"oidc.{region}.amazonaws.com",
+                    "Host": f"oidc.{auth_region}.amazonaws.com",
                     "Connection": "keep-alive",
                     "x-amz-user-agent": (
                         "aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown "
@@ -1641,16 +1752,17 @@ class KiroService:
                 resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
                 if resp.status_code >= 400:
                     body = resp.text[:2000]
+                    context = f"auth_region={auth_region}, refresh_token_len={len(refresh_token)}"
                     account.need_refresh = True
-                    raise ValueError(f"IdC token refresh failed: HTTP {resp.status_code} {body}")
+                    raise ValueError(f"IdC token refresh failed: HTTP {resp.status_code} {body} ({context})")
                 data = resp.json()
                 if isinstance(data, dict):
                     new_token = _trimmed_str(data.get("accessToken") or data.get("access_token"))
                     new_refresh = _trimmed_str(data.get("refreshToken") or data.get("refresh_token")) or None
                     expires_in = data.get("expiresIn") if isinstance(data.get("expiresIn"), int) else None
             else:
-                url = f"https://prod.{region}.auth.desktop.kiro.dev/refreshToken"
-                host = f"prod.{region}.auth.desktop.kiro.dev"
+                url = f"https://prod.{auth_region}.auth.desktop.kiro.dev/refreshToken"
+                host = f"prod.{auth_region}.auth.desktop.kiro.dev"
                 ide_version = self._get_kiro_ide_version()
                 headers = {
                     "Accept": "application/json, text/plain, */*",
@@ -1664,8 +1776,9 @@ class KiroService:
                 resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
                 if resp.status_code >= 400:
                     body = resp.text[:2000]
+                    context = f"auth_region={auth_region}, refresh_token_len={len(refresh_token)}"
                     account.need_refresh = True
-                    raise ValueError(f"Social token refresh failed: HTTP {resp.status_code} {body}")
+                    raise ValueError(f"Social token refresh failed: HTTP {resp.status_code} {body} ({context})")
                 data = resp.json()
                 if isinstance(data, dict):
                     new_token = _trimmed_str(data.get("accessToken") or data.get("access_token"))
@@ -1691,7 +1804,7 @@ class KiroService:
                 account.token_expires_at = now + timedelta(hours=1)
 
             account.need_refresh = False
-            account.region = region
+            account.region = auth_region
             account.credentials = encrypt_api_key(json.dumps(creds, ensure_ascii=False))
             await self.db.flush()
 
@@ -1733,6 +1846,7 @@ class KiroService:
         headers: Dict[str, str],
         payload: Dict[str, Any],
         model: str,
+        raise_on_auth_error: bool = False,
     ) -> AsyncIterator[bytes]:
         from app.utils.token_counter import count_tokens as _count_tokens
 
@@ -1876,6 +1990,12 @@ class KiroService:
             if resp.status_code >= 400:
                 raw = await resp.aread()
                 msg = raw.decode("utf-8", errors="replace")[:2000]
+                # Enterprise CBOR→REST fallback: raise on 401/403 so caller can retry
+                if raise_on_auth_error and resp.status_code in (401, 403):
+                    raise UpstreamAPIError(
+                        status_code=resp.status_code,
+                        message=msg or "Kiro upstream auth error",
+                    )
                 yield _openai_sse_error(msg or "Kiro upstream error", code=resp.status_code)
                 yield _openai_sse_done()
                 return
@@ -2139,7 +2259,7 @@ class KiroService:
                     return
 
                 creds = self._load_account_credentials(account)
-                region = self._coerce_region(account.region or creds.get("region"))
+                api_region = self._effective_api_region(account=account, creds=creds)
                 machineid = _trimmed_str(account.machineid or creds.get("machineid")) or secrets.token_hex(32)
                 account.machineid = machineid
                 account.last_used_at = _now_utc()
@@ -2157,6 +2277,9 @@ class KiroService:
                         )
                         payload = {"conversationState": conversation_state}
 
+                    # Normalize models even when conversationState is passed through.
+                    self._normalize_conversation_state_models(payload.get("conversationState"))
+
                     if profile_arn:
                         payload["profileArn"] = profile_arn
                 except Exception as e:
@@ -2166,20 +2289,34 @@ class KiroService:
 
                 headers = self._build_kiro_headers(token=access_token, machineid=machineid)
 
-                base_urls = self._kiro_api_base_urls(region)
+                base_urls = self._kiro_api_base_urls(api_region)
+                is_enterprise = _trimmed_str(creds.get("provider")).lower() == "enterprise"
                 last_connect_error: Optional[str] = None
-                for base_url in base_urls:
+                for idx, base_url in enumerate(base_urls):
                     try:
+                        # For Enterprise accounts, enable raise_on_auth_error on non-last
+                        # URLs so that 401/403 from the CBOR endpoint (q.*) triggers a
+                        # fallback to the REST endpoint (codewhisperer.*).
+                        raise_flag = is_enterprise and idx < len(base_urls) - 1
                         async for chunk in self._stream_generate_assistant_response_as_openai(
                             client=client,
                             base_url=base_url,
                             headers=headers,
                             payload=payload,
                             model=requested_model,
+                            raise_on_auth_error=raise_flag,
                         ):
                             yield chunk
                         await self.db.flush()
                         return
+                    except UpstreamAPIError as e:
+                        # Enterprise CBOR→REST fallback: 401/403 from CBOR, try next URL
+                        logger.info(
+                            "Enterprise CBOR→REST fallback: %s returned %s, trying next URL",
+                            base_url, e.status_code,
+                        )
+                        last_connect_error = e.message
+                        continue
                     except httpx.ConnectError as e:
                         last_connect_error = str(e)
                         continue

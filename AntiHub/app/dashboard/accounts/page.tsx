@@ -178,6 +178,8 @@ export default function AccountsPage() {
   const [detailAccount, setDetailAccount] = useState<KiroAccount | null>(null);
   const [detailBalance, setDetailBalance] = useState<any>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [isRefreshingAllKiroBalances, setIsRefreshingAllKiroBalances] = useState(false);
+  const [refreshAllKiroProgress, setRefreshAllKiroProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Codex 账号详情 Dialog 状态
   const [isCodexDetailDialogOpen, setIsCodexDetailDialogOpen] = useState(false);
@@ -1559,6 +1561,7 @@ export default function AccountsPage() {
     try {
       const balanceData = await getKiroAccountBalance(account.account_id, { refresh: true });
       setDetailBalance(balanceData);
+      setKiroBalances((prev) => ({ ...prev, [account.account_id]: balanceData.balance.available || 0 }));
 
       if (balanceData.upstream_feedback?.raw || balanceData.upstream_feedback?.message) {
         toasterRef.current?.show({
@@ -1578,6 +1581,52 @@ export default function AccountsPage() {
     } finally {
       setIsLoadingDetail(false);
     }
+  };
+
+  const handleRefreshAllKiroBalances = async () => {
+    if (isRefreshingAllKiroBalances) return;
+    if (!kiroAccounts.length) return;
+
+    const accountsToRefresh = kiroAccounts;
+    const total = accountsToRefresh.length;
+
+    setIsRefreshingAllKiroBalances(true);
+    setRefreshAllKiroProgress({ current: 0, total });
+
+    let okCount = 0;
+    let failCount = 0;
+
+    try {
+      // 逐个刷新，避免并发打爆上游/触发风控
+      for (let i = 0; i < accountsToRefresh.length; i++) {
+        const account = accountsToRefresh[i];
+        const accountId = account.account_id;
+        setRefreshAllKiroProgress({ current: i + 1, total });
+
+        try {
+          const balanceData = await getKiroAccountBalance(accountId, { refresh: true });
+          okCount += 1;
+          setKiroBalances((prev) => ({ ...prev, [accountId]: balanceData.balance.available || 0 }));
+          setDetailBalance((prev) => (prev && prev.account_id === accountId ? balanceData : prev));
+        } catch (err) {
+          failCount += 1;
+          console.warn('刷新 Kiro 账号余额失败:', accountId, err);
+        }
+      }
+    } finally {
+      setRefreshAllKiroProgress(null);
+      setIsRefreshingAllKiroBalances(false);
+    }
+
+    toasterRef.current?.show({
+      title: '批量刷新完成',
+      message:
+        failCount > 0
+          ? `已刷新 ${okCount}/${total} 个账号的余额（失败 ${failCount} 个）`
+          : `已刷新 ${okCount}/${total} 个账号的余额`,
+      variant: failCount > 0 ? 'warning' : 'success',
+      position: 'top-right',
+    });
   };
 
   const handleViewAntigravityDetail = async (account: Account) => {
@@ -2006,10 +2055,30 @@ export default function AccountsPage() {
         {activeTab === 'kiro' && (
           <Card className="flex min-h-0 flex-1 flex-col">
             <CardHeader className="text-left">
-              <CardTitle className="text-left">Kiro账号</CardTitle>
-              <CardDescription className="text-left">
-                共 {kiroAccounts.length} 个账号
-              </CardDescription>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <CardTitle className="text-left">Kiro账号</CardTitle>
+                  <CardDescription className="text-left">
+                    共 {kiroAccounts.length} 个账号
+                    {isRefreshingAllKiroBalances && refreshAllKiroProgress
+                      ? `，正在刷新 ${refreshAllKiroProgress.current}/${refreshAllKiroProgress.total}`
+                      : ''}
+                  </CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="default"
+                  onClick={handleRefreshAllKiroBalances}
+                  disabled={isRefreshingAllKiroBalances || kiroAccounts.length === 0}
+                >
+                  {isRefreshingAllKiroBalances ? (
+                    <MorphingSquare className="size-4" />
+                  ) : (
+                    <IconRefresh className="size-4" />
+                  )}
+                  <span className="ml-2">刷新全部余额</span>
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
               {kiroAccounts.length === 0 ? (
