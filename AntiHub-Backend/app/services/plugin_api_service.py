@@ -38,6 +38,7 @@ from app.services.gemini_cli_api_service import (
     _openai_request_to_gemini_cli_payload,
 )
 from app.services.zai_image_service import ZaiImageService
+from app.utils.model_normalization import normalize_claude_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +320,15 @@ class PluginAPIService:
             return {}
 
         # project 为空时给一个 best-effort fallback，避免上游直接 400
+        # Normalize Claude 4.x aliases (e.g. `claude-sonnet-4-6` -> `claude-sonnet-4.6`) to
+        # avoid strict upstream rejections (e.g. "unknown provider for model ...").
+        model = payload.get("model")
+        if isinstance(model, str) and model.strip():
+            normalized_model = normalize_claude_model_id(model)
+            if normalized_model and normalized_model != model:
+                payload = dict(payload)
+                payload["model"] = normalized_model
+
         project = payload.get("project")
         if not isinstance(project, str) or not project.strip():
             payload["project"] = self._antigravity_fallback_project_id()

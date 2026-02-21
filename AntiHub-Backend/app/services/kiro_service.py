@@ -38,6 +38,7 @@ from app.services.kiro_anthropic_converter import (
     WRITE_TOOL_DESCRIPTION_SUFFIX,
     KiroAnthropicConverter,
 )
+from app.utils.model_normalization import normalize_claude_model_id
 from app.utils.aws_eventstream import AwsEventStreamDecoder, AwsEventStreamParseError
 from app.utils.encryption import decrypt_api_key, encrypt_api_key
 
@@ -1652,6 +1653,37 @@ class KiroService:
 
         return conversation_state
 
+    @staticmethod
+    def _normalize_conversation_state_models(state: Any) -> None:
+        """
+        Best-effort normalization for client-supplied conversationState.
+
+        Some clients forward `conversationState` directly (instead of OpenAI `messages`)
+        and may use dash-version Claude ids like `claude-sonnet-4-6`. Upstream Kiro is
+        strict and expects dot-version ids (align `2-参考项目/kiro.rs` mapping).
+        """
+        if not isinstance(state, dict):
+            return
+
+        def _normalize_user_input_message(uim: Any) -> None:
+            if not isinstance(uim, dict):
+                return
+            for key in ("modelId", "model_id"):
+                val = uim.get(key)
+                if isinstance(val, str) and val.strip():
+                    uim[key] = normalize_claude_model_id(val)
+
+        current = state.get("currentMessage") or state.get("current_message")
+        if isinstance(current, dict):
+            _normalize_user_input_message(current.get("userInputMessage") or current.get("user_input_message"))
+
+        history = state.get("history")
+        if isinstance(history, list):
+            for item in history:
+                if not isinstance(item, dict):
+                    continue
+                _normalize_user_input_message(item.get("userInputMessage") or item.get("user_input_message"))
+
     async def _list_available_chat_accounts(self, *, user_id: int, exclude: set[str]) -> List[KiroAccount]:
         stmt = select(KiroAccount).where(KiroAccount.status == 1)
         stmt = stmt.where(
@@ -2244,6 +2276,9 @@ class KiroService:
                             tools=kiro_tools,
                         )
                         payload = {"conversationState": conversation_state}
+
+                    # Normalize models even when conversationState is passed through.
+                    self._normalize_conversation_state_models(payload.get("conversationState"))
 
                     if profile_arn:
                         payload["profileArn"] = profile_arn
