@@ -1607,7 +1607,7 @@ export default function AccountsPage() {
           const balanceData = await getKiroAccountBalance(accountId, { refresh: true });
           okCount += 1;
           setKiroBalances((prev) => ({ ...prev, [accountId]: balanceData.balance.available || 0 }));
-          setDetailBalance((prev) => (prev && prev.account_id === accountId ? balanceData : prev));
+          setDetailBalance((prev: any) => (prev && prev.account_id === accountId ? balanceData : prev));
         } catch (err) {
           failCount += 1;
           console.warn('刷新 Kiro 账号余额失败:', accountId, err);
