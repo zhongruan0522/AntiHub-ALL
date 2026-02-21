@@ -266,6 +266,7 @@ async def start_kiro_builder_id_device_flow(
                     "clientType": "public",
                     "scopes": AWS_OIDC_SCOPES,
                     "grantTypes": [AWS_GRANT_TYPE_DEVICE_CODE, "refresh_token"],
+                    "issuerUrl": AWS_BUILDER_ID_START_URL,
                 },
                 headers=headers,
             )

@@ -3148,7 +3148,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                       autoComplete="off"
                     />
                     <p className="text-sm text-muted-foreground">
-                      影响 AWS OIDC / CodeWhisperer 端点；留空则使用默认值。
+                      影响 AWS OIDC（SSO/OIDC）认证端点；CodeWhisperer/Q API 默认使用 us-east-1。
                     </p>
                   </div>
 
@@ -3494,7 +3494,7 @@ export function AddAccountDrawer({ open, onOpenChange, onSuccess }: AddAccountDr
                       autoComplete="off"
                     />
                     <p className="text-sm text-muted-foreground">
-                      影响 AWS OIDC / CodeWhisperer 端点；留空则使用默认值。
+                      影响 AWS OIDC（SSO/OIDC）认证端点；CodeWhisperer/Q API 默认使用 us-east-1。
                     </p>
                   </div>
 
