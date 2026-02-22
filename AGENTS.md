@@ -34,11 +34,7 @@ Module development (run inside each folder):
 - Desktop (AntiHook): `cd AntiHook && npm install && npm run tauri dev` (frontend-only build: `npm run build`)
 
 **AntiHub 对接备注：**
-
-| 层级 | 已对接服务 | 备注 |
-|------|-----------|------|
-| 后端 (AntiHub-Backend) | CodexCLI | ✅ 新服务统一对接到这里 |
-| 备注 | AntiHub-plugin | ✅ 旧 Node plugin 已合并进 Backend；`AntiHub-plugin/` 仅作为迁移助手（Env Exporter），运行时默认不部署 |
+AntiHub-plugin：✅ 旧 Node plugin 已合并进 Backend；`AntiHub-plugin/` 仅作为迁移助手（Env Exporter），运行时默认不部署
 
 ## Coding Style & Naming Conventions
 
