@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getAccounts,
   deleteAccount,
@@ -110,22 +110,70 @@ import {
 import { MorphingSquare } from '@/components/ui/morphing-square';
 import { Gemini, Claude, OpenAI, Qwen } from '@lobehub/icons';
 
+const ACCOUNT_CHANNELS = [
+  'antigravity',
+  'kiro',
+  'qwen',
+  'zai-tts',
+  'zai-image',
+  'codex',
+  'gemini',
+] as const;
+
+type AccountsChannel = (typeof ACCOUNT_CHANNELS)[number];
+
+function createChannelState<T>(value: T): Record<AccountsChannel, T> {
+  return {
+    antigravity: value,
+    kiro: value,
+    qwen: value,
+    'zai-tts': value,
+    'zai-image': value,
+    codex: value,
+    gemini: value,
+  };
+}
+
+function scheduleIdle(callback: () => void) {
+  if (typeof window === 'undefined') return;
+
+  const w = window as any;
+  if (typeof w.requestIdleCallback === 'function') {
+    w.requestIdleCallback(callback, { timeout: 2000 });
+    return;
+  }
+
+  setTimeout(callback, 300);
+}
+
 export default function AccountsPage() {
   const toasterRef = useRef<ToasterRef>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [kiroAccounts, setKiroAccounts] = useState<KiroAccount[]>([]);
-  const [kiroBalances, setKiroBalances] = useState<Record<string, number>>({});
+  const [kiroBalances, setKiroBalances] = useState<Record<string, number | null>>({});
   const [qwenAccounts, setQwenAccounts] = useState<QwenAccount[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
   const [codexRefreshErrorById, setCodexRefreshErrorById] = useState<Record<number, string>>({});
   const [geminiCliAccounts, setGeminiCliAccounts] = useState<GeminiCLIAccount[]>([]);
   const [zaiTtsAccounts, setZaiTtsAccounts] = useState<ZaiTTSAccount[]>([]);
   const [zaiImageAccounts, setZaiImageAccounts] = useState<ZaiImageAccount[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+
+  const [isPageLoading, setIsPageLoading] = useState(true);
+  const [isBootstrapped, setIsBootstrapped] = useState(false);
+  const [isChannelLoading, setIsChannelLoading] = useState<Record<AccountsChannel, boolean>>(() => createChannelState(false));
+
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingCookieId, setRefreshingCookieId] = useState<string | null>(null);
   const [refreshingCodexAccountId, setRefreshingCodexAccountId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image'>('antigravity');
+  const [activeTab, setActiveTab] = useState<AccountsChannel>('antigravity');
+
+  const activeTabRef = useRef<AccountsChannel>('antigravity');
+  const channelLoadingRef = useRef<Record<AccountsChannel, boolean>>(createChannelState(false));
+  const channelLoadedRef = useRef<Record<AccountsChannel, boolean>>(createChannelState(false));
+  const kiroBalancesRef = useRef<Record<string, number | null>>({});
+  const kiroBalanceAbortControllerRef = useRef<AbortController | null>(null);
+  const kiroBalanceJobIdRef = useRef(0);
+  const kiroBalanceLoadingRef = useRef(false);
 
   // 添加账号 Drawer 状态
   const [isAddDrawerOpen, setIsAddDrawerOpen] = useState(false);
@@ -231,6 +279,14 @@ export default function AccountsPage() {
     onConfirm: () => void;
   } | null>(null);
   const [isConfirmLoading, setIsConfirmLoading] = useState(false);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    kiroBalancesRef.current = kiroBalances;
+  }, [kiroBalances]);
 
   const formatGeminiCliResetTime = (value: string | null | undefined) => {
     if (!value) return '-';
@@ -363,137 +419,252 @@ export default function AccountsPage() {
     return name || email || '未命名';
   };
 
-  const loadAccounts = async () => {
-    try {
-      // 加载反重力账号
-      const data = await getAccounts();
-      if (Array.isArray(data)) {
-        setAccounts(data);
-      } else if (data && typeof data === 'object') {
-        setAccounts((data as any).accounts || []);
-      } else {
-        setAccounts([]);
-      }
+  const setChannelLoadingFlag = useCallback((channel: AccountsChannel, loading: boolean) => {
+    channelLoadingRef.current[channel] = loading;
+    setIsChannelLoading((prev) => ({ ...prev, [channel]: loading }));
+  }, []);
 
-      // 加载 Kiro 账号
-      try {
+  const setChannelLoadedFlag = useCallback((channel: AccountsChannel, loaded: boolean) => {
+    channelLoadedRef.current[channel] = loaded;
+  }, []);
+
+  const showLoadError = useCallback((title: string, err: unknown, fallbackMessage: string) => {
+    toasterRef.current?.show({
+      title,
+      message: err instanceof Error ? err.message : fallbackMessage,
+      variant: 'error',
+      position: 'top-right',
+    });
+  }, []);
+
+  const loadKiroBalancesProgressively = useCallback(async (
+    accountsToLoad: KiroAccount[],
+    options: { force?: boolean } = {}
+  ) => {
+    const force = Boolean(options.force);
+    const existing = kiroBalancesRef.current;
+    const queue = accountsToLoad.filter((account) => force || existing[account.account_id] === undefined);
+
+    if (queue.length === 0) return;
+    if (!force && kiroBalanceLoadingRef.current) return;
+
+    kiroBalanceJobIdRef.current += 1;
+    const jobId = kiroBalanceJobIdRef.current;
+
+    kiroBalanceLoadingRef.current = true;
+    kiroBalanceAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    kiroBalanceAbortControllerRef.current = controller;
+
+    const concurrency = Math.min(3, queue.length);
+
+    const runWorker = async () => {
+      while (queue.length > 0 && !controller.signal.aborted && kiroBalanceJobIdRef.current === jobId) {
+        const account = queue.shift();
+        if (!account) return;
+
+        try {
+          const balanceData = await getKiroAccountBalance(account.account_id, { signal: controller.signal });
+          if (controller.signal.aborted || kiroBalanceJobIdRef.current !== jobId) return;
+
+          const available = balanceData.balance.available || 0;
+          setKiroBalances((prev) => ({ ...prev, [account.account_id]: available }));
+          setDetailBalance((prev: any) => (prev && prev.account_id === account.account_id ? balanceData : prev));
+        } catch (err) {
+          if (controller.signal.aborted || kiroBalanceJobIdRef.current !== jobId) return;
+          console.warn('[Kiro] 加载余额失败:', account.account_id, err);
+          setKiroBalances((prev) => ({ ...prev, [account.account_id]: null }));
+        }
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
+    } finally {
+      if (kiroBalanceJobIdRef.current === jobId) {
+        kiroBalanceLoadingRef.current = false;
+      }
+    }
+  }, []);
+
+  const loadChannel = useCallback(async (
+    channel: AccountsChannel,
+    options: { mode?: 'foreground' | 'background'; force?: boolean } = {}
+  ) => {
+    const mode = options.mode ?? 'foreground';
+    const force = Boolean(options.force);
+    const wasLoaded = channelLoadedRef.current[channel];
+
+    if (!force && channelLoadedRef.current[channel]) return;
+    if (channelLoadingRef.current[channel]) return;
+
+    setChannelLoadingFlag(channel, true);
+
+    try {
+      if (channel === 'antigravity') {
+        const data = await getAccounts();
+        if (Array.isArray(data)) {
+          setAccounts(data);
+        } else if (data && typeof data === 'object') {
+          setAccounts((data as any).accounts || []);
+        } else {
+          setAccounts([]);
+        }
+      } else if (channel === 'kiro') {
         const kiroData = await getKiroAccounts();
         setKiroAccounts(kiroData);
 
-        // 加载每个Kiro账号的余额
-        const balances: Record<string, number> = {};
-        await Promise.all(
-          kiroData.map(async (account) => {
-            try {
-              const balanceData = await getKiroAccountBalance(account.account_id);
-              balances[account.account_id] = balanceData.balance.available || 0;
-            } catch (err) {
-              console.error(`加载账号${account.account_id}余额失败:`, err);
-              balances[account.account_id] = 0;
+        // 保留已有余额，避免刷新时闪烁；不存在的账号则丢弃
+        setKiroBalances((prev) => {
+          const next: Record<string, number | null> = {};
+          for (const account of kiroData) {
+            if (Object.prototype.hasOwnProperty.call(prev, account.account_id)) {
+              next[account.account_id] = prev[account.account_id];
             }
-          })
-        );
-        setKiroBalances(balances);
-      } catch (err) {
-        console.log('未加载Kiro账号');
-        setKiroAccounts([]);
-        setKiroBalances({});
-      }
+          }
+          return next;
+        });
 
-      // 加载 Qwen 账号
-      try {
+        // 余额异步渐进加载：先出清单，再逐个补齐余额
+        if (mode === 'foreground') {
+          void loadKiroBalancesProgressively(kiroData, { force });
+        }
+      } else if (channel === 'qwen') {
         const qwenData = await getQwenAccounts();
         setQwenAccounts(qwenData);
-      } catch (err) {
-        console.log('未加载Qwen账号');
-        setQwenAccounts([]);
-      }
-
-      // 加载 Codex 账号
-      try {
+      } else if (channel === 'codex') {
         const codexData = await getCodexAccounts();
         setCodexAccounts(codexData);
-      } catch (err) {
-        console.log('未加载Codex账号');
-        setCodexAccounts([]);
-      }
-
-      // 加载 GeminiCLI 账号
-      try {
+      } else if (channel === 'gemini') {
         const geminiCliData = await getGeminiCLIAccounts();
         setGeminiCliAccounts(geminiCliData);
-      } catch (err) {
-        console.log('未加载GeminiCLI账号');
-        setGeminiCliAccounts([]);
-      }
-
-      // 加载 ZAI TTS 账号
-      try {
+      } else if (channel === 'zai-tts') {
         const zaiTtsData = await getZaiTTSAccounts();
         setZaiTtsAccounts(zaiTtsData);
-      } catch (err) {
-        console.log('未加载ZAI TTS账号');
-        setZaiTtsAccounts([]);
-      }
-
-      // 加载 ZAI Image 账号
-      try {
+      } else if (channel === 'zai-image') {
         const zaiImageData = await getZaiImageAccounts();
         setZaiImageAccounts(zaiImageData);
-      } catch (err) {
-        console.log('未加载ZAI Image账号');
-        setZaiImageAccounts([]);
       }
+
+      setChannelLoadedFlag(channel, true);
     } catch (err) {
-      toasterRef.current?.show({
-        title: '加载失败',
-        message: err instanceof Error ? err.message : '加载账号列表失败',
-        variant: 'error',
-        position: 'top-right',
-      });
-      setAccounts([]);
-      setKiroAccounts([]);
-      setQwenAccounts([]);
-      setCodexAccounts([]);
-      setZaiTtsAccounts([]);
-      setZaiImageAccounts([]);
+      setChannelLoadedFlag(channel, wasLoaded);
+
+      if (!wasLoaded) {
+        if (channel === 'antigravity') setAccounts([]);
+        if (channel === 'kiro') {
+          setKiroAccounts([]);
+          setKiroBalances({});
+        }
+        if (channel === 'qwen') setQwenAccounts([]);
+        if (channel === 'codex') setCodexAccounts([]);
+        if (channel === 'gemini') setGeminiCliAccounts([]);
+        if (channel === 'zai-tts') setZaiTtsAccounts([]);
+        if (channel === 'zai-image') setZaiImageAccounts([]);
+      }
+
+      if (mode === 'foreground') {
+        showLoadError('加载失败', err, '加载账号列表失败');
+      } else {
+        console.warn(`[Accounts] 后台预加载失败 (${channel}):`, err);
+      }
     } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
+      setChannelLoadingFlag(channel, false);
     }
-  };
+  }, [loadKiroBalancesProgressively, setChannelLoadedFlag, setChannelLoadingFlag, showLoadError]);
+
+  const prefetchOtherChannels = useCallback((priority: AccountsChannel) => {
+    scheduleIdle(() => {
+      void (async () => {
+        for (const channel of ACCOUNT_CHANNELS) {
+          if (channel === priority) continue;
+          if (channelLoadedRef.current[channel] || channelLoadingRef.current[channel]) continue;
+          await loadChannel(channel, { mode: 'background' });
+        }
+      })();
+    });
+  }, [loadChannel]);
+
+  const handleAccountsChanged = useCallback(() => {
+    const channel = activeTabRef.current;
+    void loadChannel(channel, { mode: 'foreground', force: true });
+    prefetchOtherChannels(channel);
+  }, [loadChannel, prefetchOtherChannels]);
 
   useEffect(() => {
+    let cancelled = false;
+
     const init = async () => {
+      setIsPageLoading(true);
+
+      let defaultChannel: AccountsChannel = 'antigravity';
       try {
         const settings = await getUiDefaultChannels();
         if (settings.accounts_default_channel) {
-          setActiveTab(settings.accounts_default_channel);
+          defaultChannel = settings.accounts_default_channel;
         }
       } catch {
         // 不阻塞账户管理页面：设置读取失败时保持默认渠道
-      } finally {
-        loadAccounts();
       }
+
+      if (cancelled) return;
+
+      setActiveTab(defaultChannel);
+      activeTabRef.current = defaultChannel;
+
+      await loadChannel(defaultChannel, { mode: 'foreground', force: true });
+      if (cancelled) return;
+
+      setIsPageLoading(false);
+      setIsBootstrapped(true);
+      prefetchOtherChannels(defaultChannel);
     };
 
     init();
 
     // 监听账号添加事件
     const handleAccountAdded = () => {
-      loadAccounts();
+      handleAccountsChanged();
     };
 
     window.addEventListener('accountAdded', handleAccountAdded);
 
     return () => {
+      cancelled = true;
       window.removeEventListener('accountAdded', handleAccountAdded);
+      kiroBalanceAbortControllerRef.current?.abort();
     };
-  }, []);
+  }, [handleAccountsChanged, loadChannel, prefetchOtherChannels]);
 
-  const handleRefresh = () => {
+  useEffect(() => {
+    if (!isBootstrapped) return;
+
+    if (!channelLoadedRef.current[activeTab] && !channelLoadingRef.current[activeTab]) {
+      void loadChannel(activeTab, { mode: 'foreground' });
+      return;
+    }
+
+    if (activeTab === 'kiro' && channelLoadedRef.current.kiro && !kiroBalanceLoadingRef.current) {
+      const balances = kiroBalancesRef.current;
+      const hasMissing = kiroAccounts.some((account) => balances[account.account_id] === undefined);
+      if (hasMissing) {
+        void loadKiroBalancesProgressively(kiroAccounts);
+      }
+    }
+  }, [activeTab, isBootstrapped, kiroAccounts, loadChannel, loadKiroBalancesProgressively]);
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    const channel = activeTabRef.current;
+
     setIsRefreshing(true);
-    loadAccounts();
+    try {
+      await loadChannel(channel, { mode: 'foreground', force: true });
+    } finally {
+      setIsRefreshing(false);
+    }
+
+    prefetchOtherChannels(channel);
   };
 
   const handleAddAccount = () => {
@@ -1814,7 +1985,7 @@ export default function AccountsPage() {
     }
   };
 
-  if (isLoading) {
+  if (isPageLoading) {
     return (
       <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden py-4 md:gap-6 md:py-6">
         <div className="flex min-h-0 flex-1 flex-col px-4 lg:px-6">
@@ -1835,7 +2006,7 @@ export default function AccountsPage() {
             <div></div>
             <div className="flex flex-wrap items-center gap-2">
               {/* 账号配置切换下拉菜单 */}
-              <Select value={activeTab} onValueChange={(value: 'antigravity' | 'kiro' | 'qwen' | 'codex' | 'gemini' | 'zai-tts' | 'zai-image') => setActiveTab(value)}>
+              <Select value={activeTab} onValueChange={(value: AccountsChannel) => setActiveTab(value)}>
                 <SelectTrigger className="w-[140px] sm:w-[160px] h-9">
                   <SelectValue>
                     {activeTab === 'antigravity' ? (
@@ -1926,7 +2097,7 @@ export default function AccountsPage() {
                 variant="outline"
                 size="default"
                 onClick={handleRefresh}
-                disabled={isRefreshing || (activeTab === 'codex' && isRefreshingAllCodexQuotas)}
+                disabled={isRefreshing || isChannelLoading[activeTab] || (activeTab === 'codex' && isRefreshingAllCodexQuotas)}
               >
                 {isRefreshing ? (
                   <MorphingSquare className="size-4" />
@@ -1955,7 +2126,11 @@ export default function AccountsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
-              {accounts.length === 0 ? (
+              {isChannelLoading.antigravity ? (
+                <div className="flex items-center justify-center py-12">
+                  <MorphingSquare message="加载账号列表..." />
+                </div>
+              ) : accounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Antigravity账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个账号</p>
@@ -2125,7 +2300,11 @@ export default function AccountsPage() {
               </div>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
-              {kiroAccounts.length === 0 ? (
+              {isChannelLoading.kiro ? (
+                <div className="flex items-center justify-center py-12">
+                  <MorphingSquare message="加载账号列表..." />
+                </div>
+              ) : kiroAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Kiro账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个Kiro账号</p>
@@ -2153,9 +2332,12 @@ export default function AccountsPage() {
                             {getKiroDisplayName(account)}
                           </TableCell>
                           <TableCell className="font-mono text-sm">
-                            {kiroBalances[account.account_id] !== undefined
-                              ? `$${Number(kiroBalances[account.account_id] || 0).toFixed(2)}`
-                              : '加载中...'}
+                            {(() => {
+                              const value = kiroBalances[account.account_id];
+                              if (value === undefined) return <span className="text-muted-foreground">加载中...</span>;
+                              if (value === null) return <span className="text-red-600">查询失败</span>;
+                              return <span>{`$${Number(value).toFixed(2)}`}</span>;
+                            })()}
                           </TableCell>
                           <TableCell>
                             <Badge variant={account.status === 1 ? 'default' : 'outline'} className="whitespace-nowrap">
@@ -2228,7 +2410,11 @@ export default function AccountsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
-              {qwenAccounts.length === 0 ? (
+              {isChannelLoading.qwen ? (
+                <div className="flex items-center justify-center py-12">
+                  <MorphingSquare message="加载账号列表..." />
+                </div>
+              ) : qwenAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Qwen账号</p>
                   <p className="text-sm">点击“添加账号”按钮导入您的第一个Qwen账号</p>
@@ -2361,7 +2547,11 @@ export default function AccountsPage() {
               </div>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
-              {codexAccounts.length === 0 ? (
+              {isChannelLoading.codex ? (
+                <div className="flex items-center justify-center py-12">
+                  <MorphingSquare message="加载账号列表..." />
+                </div>
+              ) : codexAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无Codex账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个Codex账号</p>
@@ -2553,7 +2743,11 @@ export default function AccountsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
-              {geminiCliAccounts.length === 0 ? (
+              {isChannelLoading.gemini ? (
+                <div className="flex items-center justify-center py-12">
+                  <MorphingSquare message="加载账号列表..." />
+                </div>
+              ) : geminiCliAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无GeminiCLI账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个GeminiCLI账号</p>
@@ -2656,7 +2850,11 @@ export default function AccountsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
-              {zaiTtsAccounts.length === 0 ? (
+              {isChannelLoading['zai-tts'] ? (
+                <div className="flex items-center justify-center py-12">
+                  <MorphingSquare message="加载账号列表..." />
+                </div>
+              ) : zaiTtsAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无ZAI TTS账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个 ZAI TTS 账号</p>
@@ -2753,7 +2951,11 @@ export default function AccountsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col">
-              {zaiImageAccounts.length === 0 ? (
+              {isChannelLoading['zai-image'] ? (
+                <div className="flex items-center justify-center py-12">
+                  <MorphingSquare message="加载账号列表..." />
+                </div>
+              ) : zaiImageAccounts.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <p className="text-lg mb-2">暂无ZAI Image账号</p>
                   <p className="text-sm">点击“添加账号”按钮添加您的第一个 ZAI Image 账号</p>
@@ -2841,7 +3043,6 @@ export default function AccountsPage() {
       <AddAccountDrawer
         open={isAddDrawerOpen}
         onOpenChange={setIsAddDrawerOpen}
-        onSuccess={loadAccounts}
       />
 
       {/* 配额查看 Dialog */}

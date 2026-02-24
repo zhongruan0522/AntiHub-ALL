@@ -1895,7 +1895,7 @@ export async function updateKiroAccountName(accountId: string, accountName: stri
  */
 export async function getKiroAccountBalance(
   accountId: string,
-  options?: { refresh?: boolean }
+  options?: { refresh?: boolean; signal?: AbortSignal }
 ): Promise<KiroAccountBalance> {
   const queryParams = new URLSearchParams();
   if (options?.refresh) queryParams.append('refresh', '1');
@@ -1904,7 +1904,10 @@ export async function getKiroAccountBalance(
     queryParams.toString() ? '?' + queryParams.toString() : ''
   }`;
 
-  const result = await fetchWithAuth<{ success: boolean; data: KiroAccountBalance }>(url, { method: 'GET' });
+  const result = await fetchWithAuth<{ success: boolean; data: KiroAccountBalance }>(url, {
+    method: 'GET',
+    signal: options?.signal,
+  });
   return result.data;
 }
 
