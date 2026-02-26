@@ -79,10 +79,10 @@ ANTIGRAVITY_OAUTH_STATE_KEY_PREFIX = "antigravity_oauth:"
 # Cloudcode-pa（推理/模型列表）
 # 说明：plugin 默认优先 daily sandbox；这里按相同优先级做 best-effort fallback
 ANTIGRAVITY_CLOUDCODE_PA_ENDPOINTS = [
-    ("https://daily-cloudcode-pa.googleapis.com/v1internal", "daily-cloudcode-pa.googleapis.com"),
     ("https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal", "daily-cloudcode-pa.sandbox.googleapis.com"),
-    ("https://cloudcode-pa.googleapis.com/v1internal", "cloudcode-pa.googleapis.com"),
+    ("https://daily-cloudcode-pa.googleapis.com/v1internal", "daily-cloudcode-pa.googleapis.com"),
     ("https://autopush-cloudcode-pa.sandbox.googleapis.com/v1internal", "autopush-cloudcode-pa.sandbox.googleapis.com"),
+    ("https://cloudcode-pa.googleapis.com/v1internal", "cloudcode-pa.googleapis.com"),
 ]
 
 # Cloudcode-pa（loadCodeAssist/onboardUser）
@@ -274,6 +274,23 @@ class PluginAPIService:
             return False
         msg = (body_text or "").lower()
         return "no capacity available" in msg
+
+    def _antigravity_should_try_next_endpoint(self, status_code: int) -> bool:
+        """
+        判断 Antigravity / cloudcode-pa 上游异常时是否应该尝试下一个 endpoint。
+
+        参考 `2-参考项目/Antigravity-Manager` 的降级策略：
+        - 429（限流）/ 408（超时）/ 404（部分环境或模型未同步）/ 5xx（服务端错误） => 尝试 fallback endpoint
+        - 4xx 其它（如 400/401/403）一般是请求/鉴权问题，继续切 endpoint 大概率无意义
+        """
+        try:
+            code = int(status_code)
+        except Exception:
+            return False
+
+        if code in (404, 408, 429):
+            return True
+        return 500 <= code <= 599
 
     def _antigravity_fallback_project_id(self) -> str:
         # 参考项目会在 project_id 缺失时生成一个随机 project 字符串（legacy best-effort）。
@@ -888,7 +905,10 @@ class PluginAPIService:
                     if len(msg) > 2000:
                         msg = msg[:2000]
                     last_err = ValueError(msg or f"Antigravity 上游错误: HTTP {resp.status_code}")
-                    if resp.status_code == 429 or self._antigravity_should_retry_no_capacity(resp.status_code, msg):
+                    if (
+                        self._antigravity_should_try_next_endpoint(resp.status_code)
+                        or self._antigravity_should_retry_no_capacity(resp.status_code, msg)
+                    ):
                         continue
                     raise ValueError(msg or f"Antigravity 上游错误: HTTP {resp.status_code}")
 
@@ -947,7 +967,10 @@ class PluginAPIService:
                                 msg = msg[:2000]
                             last_status = resp.status_code
                             last_msg = msg or f"Antigravity 上游错误: HTTP {resp.status_code}"
-                            if resp.status_code == 429 or self._antigravity_should_retry_no_capacity(resp.status_code, last_msg):
+                            if (
+                                self._antigravity_should_try_next_endpoint(resp.status_code)
+                                or self._antigravity_should_retry_no_capacity(resp.status_code, last_msg)
+                            ):
                                 continue
                             yield _openai_error_sse(last_msg or "Antigravity 上游错误", code=resp.status_code)
                             yield _openai_done_sse()
