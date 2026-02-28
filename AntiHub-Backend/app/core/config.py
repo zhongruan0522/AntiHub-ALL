@@ -55,8 +55,8 @@ class Settings(BaseSettings):
 
     # Kiro 配置（可选）
     kiro_ide_version: str = Field(
-        default="0.9.2",
-        description="Kiro 请求 User-Agent 使用的 IDE 版本（默认 0.9.2）",
+        default="0.10.0",
+        description="Kiro 请求 User-Agent 使用的 IDE 版本（默认 0.10.0）",
     )
     kiro_proxy_url: Optional[str] = Field(
         default=None,

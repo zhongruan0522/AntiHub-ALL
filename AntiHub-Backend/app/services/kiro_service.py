@@ -38,6 +38,7 @@ from app.services.kiro_anthropic_converter import (
     WRITE_TOOL_DESCRIPTION_SUFFIX,
     KiroAnthropicConverter,
 )
+from app.utils.json_schema import normalize_json_schema
 from app.utils.model_normalization import normalize_claude_model_id
 from app.utils.aws_eventstream import AwsEventStreamDecoder, AwsEventStreamParseError
 from app.utils.encryption import decrypt_api_key, encrypt_api_key
@@ -122,6 +123,33 @@ def _openai_sse_error(message: str, *, code: int = 500) -> bytes:
 
 def _openai_sse_done() -> bytes:
     return b"data: [DONE]\n\n"
+
+
+def _map_kiro_provider_error(status_code: int, message: str) -> Tuple[int, str]:
+    """
+    Map deterministic upstream request errors to 400 to avoid meaningless client retries.
+
+    Aligns with kiro.rs behavior for Claude Code/Kiro channel compatibility.
+    """
+
+    text = str(message or "").strip()
+    lowered = text.lower()
+
+    # Context window full (conversation history/system/tools too large)
+    if "content_length_exceeds_threshold" in lowered:
+        return (
+            400,
+            "Context window is full. Reduce conversation history, system prompt, or tools.",
+        )
+
+    # Single request input too large
+    if "input is too long" in lowered:
+        return (
+            400,
+            "Input is too long. Reduce the size of your messages.",
+        )
+
+    return int(status_code), text
 
 
 def _account_to_safe_dict(account: KiroAccount) -> Dict[str, Any]:
@@ -1299,7 +1327,7 @@ class KiroService:
         value = getattr(self.settings, "kiro_ide_version", None)
         if isinstance(value, str) and value.strip():
             return value.strip()
-        return "0.9.2"
+        return "0.10.0"
 
     @staticmethod
     def _coerce_region(value: Any) -> str:
@@ -1430,12 +1458,7 @@ class KiroService:
 
             parameters = fn.get("parameters")
             schema_obj = parameters if isinstance(parameters, dict) else {}
-            if schema_obj.get("type") is None:
-                schema_obj = dict(schema_obj)
-                schema_obj["type"] = "object"
-            if not isinstance(schema_obj.get("properties"), dict):
-                schema_obj = dict(schema_obj)
-                schema_obj["properties"] = {}
+            schema_obj = normalize_json_schema(schema_obj)
 
             out.append(
                 {
@@ -1996,7 +2019,15 @@ class KiroService:
                         status_code=resp.status_code,
                         message=msg or "Kiro upstream auth error",
                     )
-                yield _openai_sse_error(msg or "Kiro upstream error", code=resp.status_code)
+                mapped_code, mapped_message = _map_kiro_provider_error(resp.status_code, msg)
+                if mapped_code != resp.status_code:
+                    logger.warning(
+                        "Upstream rejected request (mapped HTTP %s -> %s): %s",
+                        resp.status_code,
+                        mapped_code,
+                        msg[:200],
+                    )
+                yield _openai_sse_error(mapped_message or msg or "Kiro upstream error", code=mapped_code)
                 yield _openai_sse_done()
                 return
 
@@ -2136,7 +2167,15 @@ class KiroService:
                     if msg_type == "error":
                         error_code = (frame.error_code or "UnknownError").strip() or "UnknownError"
                         error_message = frame.payload.decode("utf-8", errors="replace")
-                        yield _openai_sse_error(f"{error_code}: {error_message[:2000]}", code=500)
+                        raw_err = f"{error_code}: {error_message[:2000]}"
+                        mapped_code, mapped_message = _map_kiro_provider_error(500, raw_err)
+                        if mapped_code != 500:
+                            logger.warning(
+                                "Upstream error mapped HTTP 500 -> %s: %s",
+                                mapped_code,
+                                raw_err[:200],
+                            )
+                        yield _openai_sse_error(mapped_message or raw_err or "Kiro upstream error", code=mapped_code)
                         yield _openai_sse_done()
                         return
 

@@ -40,7 +40,7 @@ services:
       PLUGIN_ADMIN_API_KEY: ${PLUGIN_ADMIN_API_KEY:-}
 
       # Kiro（可选）
-      KIRO_IDE_VERSION: ${KIRO_IDE_VERSION:-0.9.2}
+      KIRO_IDE_VERSION: ${KIRO_IDE_VERSION:-0.10.0}
       KIRO_PROXY_URL: ${KIRO_PROXY_URL:-}
 
     volumes:

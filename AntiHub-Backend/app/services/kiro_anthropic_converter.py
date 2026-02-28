@@ -13,6 +13,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas.anthropic import AnthropicMessagesRequest
+from app.utils.json_schema import normalize_json_schema
 from app.utils.kiro_converters import generate_thinking_hint, inject_thinking_hint, is_thinking_enabled
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,23 @@ class KiroAnthropicConverter:
         # Kiro/CodeWhisperer 对 tool_use/tool_result 的配对很严格：如果 tool_result 缺少 toolUseId，
         # 或 tool_use 缺少 toolUseId，容易触发上游 400 "Improperly formed request"。
         # 这里按消息顺序做一次“就地补全”，确保同一对 tool_use/tool_result 使用同一个 ID。
-        cls._patch_tool_use_and_result_ids(request.messages)
+        # Align kiro.rs: Claude 4.x deprecated assistant prefill, and Kiro upstream rejects it.
+        # If the last message is not `user`, silently truncate to the last user message.
+        messages: List[Any] = list(request.messages)
+        if str(getattr(messages[-1], "role", "") or "").strip().lower() != "user":
+            logger.info(
+                "Detected trailing non-user message (assistant prefill); truncating to last user message for Kiro compatibility"
+            )
+            last_user_idx: Optional[int] = None
+            for i in range(len(messages) - 1, -1, -1):
+                if str(getattr(messages[i], "role", "") or "").strip().lower() == "user":
+                    last_user_idx = i
+                    break
+            if last_user_idx is None:
+                raise ValueError("messages must contain at least one user message")
+            messages = messages[: last_user_idx + 1]
+
+        cls._patch_tool_use_and_result_ids(messages)
 
         model_id = cls._map_model(request.model)
         thinking_cfg = getattr(request, "thinking", None)
@@ -108,14 +125,14 @@ class KiroAnthropicConverter:
         # messages 的最后一条作为 currentMessage，前面的都进入 history。
         #
         # 对齐 kiro.rs：合并连续 user 消息，并确保 history 以 assistant 结尾（必要时自动补一个 OK）。
-        last = request.messages[-1]
+        last = messages[-1]
         last_role = str(getattr(last, "role", "") or "").strip().lower()
 
-        history_messages = request.messages[:-1]
+        history_messages = messages[:-1]
         if last_role == "assistant":
             # Anthropic 允许以 assistant 结尾用于 continuation；Kiro currentMessage 只能是 userInputMessage。
             # 这里把最后一条 assistant 纳入 history，并用一个 "Continue" 的 currentMessage 触发继续生成。
-            history_messages = request.messages[:]
+            history_messages = messages[:]
 
         history.extend(cls._build_history_from_messages(history_messages, model_id))
 
@@ -416,15 +433,14 @@ class KiroAnthropicConverter:
 
             schema_obj: Dict[str, Any] = {}
             input_schema = getattr(t, "input_schema", None)
-            if input_schema is not None and hasattr(input_schema, "model_dump"):
+            if isinstance(input_schema, dict):
+                schema_obj = input_schema
+            elif input_schema is not None and hasattr(input_schema, "model_dump"):
                 schema_obj = input_schema.model_dump(exclude_none=True)  # type: ignore[assignment]
             if not isinstance(schema_obj, dict):
                 schema_obj = {}
 
-            if schema_obj.get("type") is None:
-                schema_obj["type"] = "object"
-            if not isinstance(schema_obj.get("properties"), dict):
-                schema_obj["properties"] = {}
+            schema_obj = normalize_json_schema(schema_obj)
 
             out.append(
                 {
