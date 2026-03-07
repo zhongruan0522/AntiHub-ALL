@@ -61,6 +61,7 @@ SUPPORTED_MODELS = [
     "gpt-5-codex",
     "gpt-5-codex-mini",
     "gpt-5",
+    "gpt-5.4",
 ]
 
 CODEX_MODEL_ALIASES = {
@@ -806,7 +807,10 @@ def _normalize_codex_responses_request(request_data: Dict[str, Any]) -> Dict[str
     body.pop("max_completion_tokens", None)
     body.pop("temperature", None)
     body.pop("top_p", None)
-    body.pop("service_tier", None)
+    # Codex upstream seems to only accept `service_tier="priority"` (and rejects other values).
+    # Keep it only for that exact tier, otherwise strip for compatibility.
+    if "service_tier" in body and _safe_str(body.get("service_tier")) != "priority":
+        body.pop("service_tier", None)
 
     # 兼容 `input: "text"` 的快捷写法，转换为 Codex 更稳定的 message 结构
     input_value = body.get("input")
@@ -863,7 +867,8 @@ def _normalize_codex_responses_compact_request(request_data: Dict[str, Any]) -> 
     body.pop("max_completion_tokens", None)
     body.pop("temperature", None)
     body.pop("top_p", None)
-    body.pop("service_tier", None)
+    if "service_tier" in body and _safe_str(body.get("service_tier")) != "priority":
+        body.pop("service_tier", None)
 
     input_value = body.get("input")
     if isinstance(input_value, str):
