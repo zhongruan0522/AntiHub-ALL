@@ -38,10 +38,20 @@ from app.services.kiro_anthropic_converter import (
     WRITE_TOOL_DESCRIPTION_SUFFIX,
     KiroAnthropicConverter,
 )
-from app.utils.json_schema import normalize_json_schema
 from app.utils.model_normalization import normalize_claude_model_id
 from app.utils.aws_eventstream import AwsEventStreamDecoder, AwsEventStreamParseError
 from app.utils.encryption import decrypt_api_key, encrypt_api_key
+from app.utils.truncation_state import (
+    save_tool_truncation,
+    save_content_truncation,
+    get_tool_truncation,
+    get_content_truncation,
+)
+from app.utils.truncation_recovery import (
+    should_inject_recovery,
+    generate_truncation_tool_result,
+    generate_truncation_user_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,33 +133,6 @@ def _openai_sse_error(message: str, *, code: int = 500) -> bytes:
 
 def _openai_sse_done() -> bytes:
     return b"data: [DONE]\n\n"
-
-
-def _map_kiro_provider_error(status_code: int, message: str) -> Tuple[int, str]:
-    """
-    Map deterministic upstream request errors to 400 to avoid meaningless client retries.
-
-    Aligns with kiro.rs behavior for Claude Code/Kiro channel compatibility.
-    """
-
-    text = str(message or "").strip()
-    lowered = text.lower()
-
-    # Context window full (conversation history/system/tools too large)
-    if "content_length_exceeds_threshold" in lowered:
-        return (
-            400,
-            "Context window is full. Reduce conversation history, system prompt, or tools.",
-        )
-
-    # Single request input too large
-    if "input is too long" in lowered:
-        return (
-            400,
-            "Input is too long. Reduce the size of your messages.",
-        )
-
-    return int(status_code), text
 
 
 def _account_to_safe_dict(account: KiroAccount) -> Dict[str, Any]:
@@ -1197,6 +1180,7 @@ class KiroService:
             },
             "free_trial": free_trial,
             "bonus_details": bonus_details,
+            "expires_at": account.token_expires_at.isoformat() if account.token_expires_at else None,
         }
 
         if upstream_feedback:
@@ -1327,7 +1311,7 @@ class KiroService:
         value = getattr(self.settings, "kiro_ide_version", None)
         if isinstance(value, str) and value.strip():
             return value.strip()
-        return "0.10.0"
+        return "0.9.2"
 
     @staticmethod
     def _coerce_region(value: Any) -> str:
@@ -1458,7 +1442,12 @@ class KiroService:
 
             parameters = fn.get("parameters")
             schema_obj = parameters if isinstance(parameters, dict) else {}
-            schema_obj = normalize_json_schema(schema_obj)
+            if schema_obj.get("type") is None:
+                schema_obj = dict(schema_obj)
+                schema_obj["type"] = "object"
+            if not isinstance(schema_obj.get("properties"), dict):
+                schema_obj = dict(schema_obj)
+                schema_obj["properties"] = {}
 
             out.append(
                 {
@@ -1716,7 +1705,34 @@ class KiroService:
         if exclude:
             stmt = stmt.where(KiroAccount.account_id.not_in(exclude))
         result = await self.db.execute(stmt.order_by(KiroAccount.created_at.desc()))
-        return list(result.scalars().all())
+        accounts = list(result.scalars().all())
+        
+        # 过滤出有可用额度的账号（包括付费额度和有效的试用额度）
+        available_accounts = []
+        now = _now_utc()
+        for account in accounts:
+            # 计算付费可用额度
+            current_usage = _coerce_float(account.current_usage, 0.0)
+            usage_limit = _coerce_float(account.usage_limit, 0.0)
+            bonus_limit = _coerce_float(account.bonus_limit, 0.0)
+            bonus_usage = _coerce_float(account.bonus_usage, 0.0)
+            
+            paid_available = max(usage_limit - current_usage, 0.0) + max(bonus_limit - bonus_usage, 0.0)
+            
+            # 计算试用可用额度（仅当试用未过期且状态为激活时）
+            free_available = 0.0
+            if account.free_trial_status and account.free_trial_expiry and account.free_trial_expiry > now:
+                ft_limit = _coerce_float(account.free_trial_limit, 0.0)
+                ft_usage = _coerce_float(account.free_trial_usage, 0.0)
+                free_available = max(ft_limit - ft_usage, 0.0)
+            
+            total_available = paid_available + free_available
+            
+            # 只返回有可用额度的账号
+            if total_available > 0:
+                available_accounts.append(account)
+        
+        return available_accounts
 
     async def _ensure_valid_access_token(
         self, *, client: httpx.AsyncClient, account: KiroAccount
@@ -2019,15 +2035,7 @@ class KiroService:
                         status_code=resp.status_code,
                         message=msg or "Kiro upstream auth error",
                     )
-                mapped_code, mapped_message = _map_kiro_provider_error(resp.status_code, msg)
-                if mapped_code != resp.status_code:
-                    logger.warning(
-                        "Upstream rejected request (mapped HTTP %s -> %s): %s",
-                        resp.status_code,
-                        mapped_code,
-                        msg[:200],
-                    )
-                yield _openai_sse_error(mapped_message or msg or "Kiro upstream error", code=mapped_code)
+                yield _openai_sse_error(msg or "Kiro upstream error", code=resp.status_code)
                 yield _openai_sse_done()
                 return
 
@@ -2167,15 +2175,7 @@ class KiroService:
                     if msg_type == "error":
                         error_code = (frame.error_code or "UnknownError").strip() or "UnknownError"
                         error_message = frame.payload.decode("utf-8", errors="replace")
-                        raw_err = f"{error_code}: {error_message[:2000]}"
-                        mapped_code, mapped_message = _map_kiro_provider_error(500, raw_err)
-                        if mapped_code != 500:
-                            logger.warning(
-                                "Upstream error mapped HTTP 500 -> %s: %s",
-                                mapped_code,
-                                raw_err[:200],
-                            )
-                        yield _openai_sse_error(mapped_message or raw_err or "Kiro upstream error", code=mapped_code)
+                        yield _openai_sse_error(f"{error_code}: {error_message[:2000]}", code=500)
                         yield _openai_sse_done()
                         return
 
@@ -2270,6 +2270,7 @@ class KiroService:
 
         exclude: set[str] = set()
         attempts = 0
+        max_attempts = 10  # 增加到 10 次，以便尝试更多账号
 
         proxy_url = self._get_kiro_proxy_url()
         client_kwargs: Dict[str, Any] = {
@@ -2279,7 +2280,7 @@ class KiroService:
             client_kwargs["proxies"] = proxy_url
 
         async with httpx.AsyncClient(**client_kwargs) as client:
-            while attempts < 3:
+            while attempts < max_attempts:
                 attempts += 1
                 accounts = await self._list_available_chat_accounts(user_id=user_id, exclude=exclude)
                 if not accounts:
@@ -2331,6 +2332,8 @@ class KiroService:
                 base_urls = self._kiro_api_base_urls(api_region)
                 is_enterprise = _trimmed_str(creds.get("provider")).lower() == "enterprise"
                 last_connect_error: Optional[str] = None
+                should_retry_next_account = False
+                
                 for idx, base_url in enumerate(base_urls):
                     try:
                         # For Enterprise accounts, enable raise_on_auth_error on non-last
@@ -2349,6 +2352,15 @@ class KiroService:
                         await self.db.flush()
                         return
                     except UpstreamAPIError as e:
+                        # 429 (Too Many Requests) 或 503/502 (高负载) - 尝试下一个账号
+                        if e.status_code in (429, 503, 502):
+                            logger.info(
+                                "Account %s returned %s, will try next account",
+                                account.account_id[:8], e.status_code,
+                            )
+                            should_retry_next_account = True
+                            last_connect_error = e.message
+                            break
                         # Enterprise CBOR→REST fallback: 401/403 from CBOR, try next URL
                         logger.info(
                             "Enterprise CBOR→REST fallback: %s returned %s, trying next URL",
@@ -2362,10 +2374,22 @@ class KiroService:
                     except httpx.HTTPError as e:
                         last_connect_error = str(e)
                         continue
+                
+                # 如果是 429/503/502，继续尝试下一个账号
+                if should_retry_next_account:
+                    continue
 
+                # 其他错误，直接返回
                 yield _openai_sse_error(last_connect_error or "Kiro upstream connect error", code=500)
                 yield _openai_sse_done()
                 return
+            
+            # 所有账号都尝试完了，返回最后的错误
+            yield _openai_sse_error(
+                f"所有可用账号都已尝试，最后错误: {last_connect_error or '未知错误'}", 
+                code=503
+            )
+            yield _openai_sse_done()
 
 
 class _KiroAwsEventStreamParser:
