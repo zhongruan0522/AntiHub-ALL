@@ -2029,6 +2029,12 @@ class KiroService:
             if resp.status_code >= 400:
                 raw = await resp.aread()
                 msg = raw.decode("utf-8", errors="replace")[:2000]
+                # 429/503/502 需要切换账号，抛出异常让外层重试
+                if resp.status_code in (429, 503, 502):
+                    raise UpstreamAPIError(
+                        status_code=resp.status_code,
+                        message=msg or f"Kiro upstream {resp.status_code} error",
+                    )
                 # Enterprise CBOR→REST fallback: raise on 401/403 so caller can retry
                 if raise_on_auth_error and resp.status_code in (401, 403):
                     raise UpstreamAPIError(
