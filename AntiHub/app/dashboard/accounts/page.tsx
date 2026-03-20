@@ -66,6 +66,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
 import Toaster, { ToasterRef } from '@/components/ui/toast';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -150,7 +151,7 @@ export default function AccountsPage() {
   const toasterRef = useRef<ToasterRef>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [kiroAccounts, setKiroAccounts] = useState<KiroAccount[]>([]);
-  const [kiroBalances, setKiroBalances] = useState<Record<string, number | null>>({});
+  const [kiroBalances, setKiroBalances] = useState<Record<string, any>>({});
   const [qwenAccounts, setQwenAccounts] = useState<QwenAccount[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
   const [codexRefreshErrorById, setCodexRefreshErrorById] = useState<Record<number, string>>({});
@@ -467,8 +468,7 @@ export default function AccountsPage() {
           const balanceData = await getKiroAccountBalance(account.account_id, { signal: controller.signal });
           if (controller.signal.aborted || kiroBalanceJobIdRef.current !== jobId) return;
 
-          const available = balanceData.balance.available || 0;
-          setKiroBalances((prev) => ({ ...prev, [account.account_id]: available }));
+          setKiroBalances((prev) => ({ ...prev, [account.account_id]: balanceData }));
           setDetailBalance((prev: any) => (prev && prev.account_id === account.account_id ? balanceData : prev));
         } catch (err) {
           if (controller.signal.aborted || kiroBalanceJobIdRef.current !== jobId) return;
@@ -1776,7 +1776,7 @@ export default function AccountsPage() {
     try {
       const balanceData = await getKiroAccountBalance(account.account_id, { refresh: true });
       setDetailBalance(balanceData);
-      setKiroBalances((prev) => ({ ...prev, [account.account_id]: balanceData.balance.available || 0 }));
+      setKiroBalances((prev) => ({ ...prev, [account.account_id]: balanceData }));
 
       if (balanceData.upstream_feedback?.raw || balanceData.upstream_feedback?.message) {
         toasterRef.current?.show({
@@ -1821,7 +1821,7 @@ export default function AccountsPage() {
         try {
           const balanceData = await getKiroAccountBalance(accountId, { refresh: true });
           okCount += 1;
-          setKiroBalances((prev) => ({ ...prev, [accountId]: balanceData.balance.available || 0 }));
+          setKiroBalances((prev) => ({ ...prev, [accountId]: balanceData }));
           setDetailBalance((prev: any) => (prev && prev.account_id === accountId ? balanceData : prev));
         } catch (err) {
           failCount += 1;
@@ -2325,7 +2325,7 @@ export default function AccountsPage() {
                     <TableBody>
                       {kiroAccounts.map((account) => (
                         <TableRow key={account.account_id}>
-                          <TableCell className="font-mono text-sm">
+                          <TableCell className="font-mono text-[11px]">
                             {account.account_id}
                           </TableCell>
                           <TableCell>
@@ -2333,10 +2333,44 @@ export default function AccountsPage() {
                           </TableCell>
                           <TableCell className="font-mono text-sm">
                             {(() => {
-                              const value = kiroBalances[account.account_id];
-                              if (value === undefined) return <span className="text-muted-foreground">加载中...</span>;
-                              if (value === null) return <span className="text-red-600">查询失败</span>;
-                              return <span>{`$${Number(value).toFixed(2)}`}</span>;
+                              const balanceData = kiroBalances[account.account_id];
+                              if (!balanceData) return '加载中...';
+                              
+                              const paidAvailable = balanceData.balance?.available || 0;
+                              const paidTotal = balanceData.balance?.total_limit || 0;
+                              
+                              // 检查免费试用是否有效（未过期且状态为激活）
+                              const freeTrialActive = balanceData.free_trial?.status && 
+                                balanceData.free_trial?.expiry && 
+                                new Date(balanceData.free_trial.expiry) > new Date();
+                              
+                              const freeAvailable = freeTrialActive ? (balanceData.free_trial?.available || 0) : 0;
+                              const freeTotal = freeTrialActive ? (balanceData.free_trial?.limit || 0) : 0;
+                              
+                              const totalAvailable = paidAvailable + freeAvailable;
+                              const totalLimit = paidTotal + freeTotal;
+                              const totalUsed = totalLimit - totalAvailable;
+                              const usedPercent = totalLimit > 0 ? (totalUsed / totalLimit * 100) : 0;
+                              const expiresAt = balanceData.expires_at;
+                              
+                              return (
+                                <div className="space-y-1 min-w-[160px]">
+                                  <div className="flex justify-between text-[11px]">
+                                    <span className="text-muted-foreground">已用/总额</span>
+                                    <span>
+                                      {totalUsed.toFixed(2)} / {totalLimit.toFixed(2)}
+                                    </span>
+                                  </div>
+                                  {totalLimit > 0 && (
+                                    <Progress value={usedPercent} className="h-1" />
+                                  )}
+                                  {expiresAt && (
+                                    <div className="text-[11px] text-muted-foreground">
+                                      过期: {new Date(expiresAt).toLocaleDateString('zh-CN')}
+                                    </div>
+                                  )}
+                                </div>
+                              );
                             })()}
                           </TableCell>
                           <TableCell>

@@ -852,21 +852,36 @@ class AnthropicAdapter:
                 input_data = cls._normalize_claude_code_tool_input(tool_name, input_data)
                 missing = cls._missing_required_args_for_claude_code_tool(tool_name, input_data)
                 if missing:
+                    from app.utils.truncation_recovery import should_inject_recovery
+                    
                     raw_args = func.get("arguments")
                     raw_str = "" if raw_args is None else str(raw_args)
                     raw_preview = raw_str[:500] + ("…" if len(raw_str) > 500 else "")
                     logger.warning(
-                        "Claude Code tool_call 参数缺失，已降级为纯文本: tool=%s, missing=%s, tool_call_id=%s, raw=%s",
+                        "Claude Code tool_call 参数缺失，使用 truncation recovery: tool=%s, missing=%s, tool_call_id=%s, raw=%s",
                         tool_name,
                         ",".join(missing),
                         tool_call.get("id", "unknown"),
                         raw_preview,
                     )
-                    content.append(
-                        AnthropicResponseTextContent(
-                            text=f"[tool_call_error] {tool_name} missing required args: {', '.join(missing)}"
+                    
+                    if should_inject_recovery():
+                        # 生成不完整的 tool_use（让客户端知道需要返回 tool_result）
+                        content.append(
+                            AnthropicResponseToolUseContent(
+                                id=tool_call.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
+                                name=tool_name,
+                                input=input_data,
+                            )
                         )
-                    )
+                        valid_tool_uses += 1
+                    else:
+                        # 降级为文本（旧行为）
+                        content.append(
+                            AnthropicResponseTextContent(
+                                text=f"[tool_call_error] {tool_name} missing required args: {', '.join(missing)}"
+                            )
+                        )
                     continue
 
                 content.append(
@@ -1482,40 +1497,65 @@ class AnthropicAdapter:
             input_data = cls._normalize_claude_code_tool_input(tool_name, input_data)
             missing = cls._missing_required_args_for_claude_code_tool(tool_name, input_data)
 
-            # Claude Code 内置工具缺参时，直接输出 tool_use 会导致本地工具校验报错；这里降级为纯文本，确保对话不中断。
+            # Claude Code 内置工具缺参时，使用 truncation recovery 生成合成 tool_use
             if missing:
+                from app.utils.truncation_recovery import should_inject_recovery
+                
                 raw_str = "" if raw_args is None else str(raw_args)
                 raw_preview = raw_str[:500] + ("…" if len(raw_str) > 500 else "")
                 logger.warning(
-                    "Claude Code stream tool_call 参数缺失，已降级为纯文本: tool=%s, missing=%s, tool_call_id=%s, raw=%s",
+                    "Claude Code stream tool_call 参数缺失，使用 truncation recovery: tool=%s, missing=%s, tool_call_id=%s, raw=%s",
                     tool_name,
                     ",".join(missing),
                     tc.get("id", "unknown"),
                     raw_preview,
                 )
 
-                text_block_start = {
-                    "type": "content_block_start",
-                    "index": next_block_index,
-                    "content_block": {"type": "text", "text": ""},
-                }
-                yield f"event: content_block_start\ndata: {json.dumps(text_block_start, ensure_ascii=False)}\n\n"
+                if should_inject_recovery():
+                    # 生成不完整的 tool_use（让模型知道它尝试调用了工具）
+                    tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
+                    tool_block_start = {
+                        "type": "content_block_start",
+                        "index": next_block_index,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": tool_name,
+                            "input": input_data,
+                        },
+                    }
+                    yield f"event: content_block_start\ndata: {json.dumps(tool_block_start, ensure_ascii=False)}\n\n"
+                    
+                    tool_block_stop = {"type": "content_block_stop", "index": next_block_index}
+                    yield f"event: content_block_stop\ndata: {json.dumps(tool_block_stop, ensure_ascii=False)}\n\n"
+                    
+                    emitted_tool_use = True
+                    next_block_index += 1
+                    continue
+                else:
+                    # 降级为文本（旧行为）
+                    text_block_start = {
+                        "type": "content_block_start",
+                        "index": next_block_index,
+                        "content_block": {"type": "text", "text": ""},
+                    }
+                    yield f"event: content_block_start\ndata: {json.dumps(text_block_start, ensure_ascii=False)}\n\n"
 
-                warn_delta = {
-                    "type": "content_block_delta",
-                    "index": next_block_index,
-                    "delta": {
-                        "type": "text_delta",
-                        "text": f"[tool_call_error] {tool_name} missing required args: {', '.join(missing)}",
-                    },
-                }
-                yield f"event: content_block_delta\ndata: {json.dumps(warn_delta, ensure_ascii=False)}\n\n"
+                    warn_delta = {
+                        "type": "content_block_delta",
+                        "index": next_block_index,
+                        "delta": {
+                            "type": "text_delta",
+                            "text": f"[tool_call_error] {tool_name} missing required args: {', '.join(missing)}",
+                        },
+                    }
+                    yield f"event: content_block_delta\ndata: {json.dumps(warn_delta, ensure_ascii=False)}\n\n"
 
-                text_block_stop = {"type": "content_block_stop", "index": next_block_index}
-                yield f"event: content_block_stop\ndata: {json.dumps(text_block_stop, ensure_ascii=False)}\n\n"
+                    text_block_stop = {"type": "content_block_stop", "index": next_block_index}
+                    yield f"event: content_block_stop\ndata: {json.dumps(text_block_stop, ensure_ascii=False)}\n\n"
 
-                next_block_index += 1
-                continue
+                    next_block_index += 1
+                    continue
 
             # content_block_start for tool_use
             tool_block_start = {
